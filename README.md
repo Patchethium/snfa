@@ -2,9 +2,9 @@
 
 `snfa` (Simple Neural Forced Aligner) is a phoneme-to-audio forced aligner built for embedded usage in python programs, with its only inference dependency being `numpy` and python 3.7 or later.
 
-**Notice**: You still need `PyTorch` and some other libs if you want to do training.
+> **Notice**: You still need `PyTorch` and some other libs if you want to do training.
 
-**Warning**: WIP, not functional
+> **Warning**: WIP, not functional
 
 ## Licence
 
