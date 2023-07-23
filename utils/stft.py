@@ -1,5 +1,7 @@
 """
 copied from librosa, ISC Licence, modified
+
+notice: it's not fully compatible with `librosa`
 """
 from typing import Callable, Optional, Union
 import warnings
@@ -134,7 +136,7 @@ def power_to_db(
 
 def stft(x: np.ndarray, n_fft=1024, hop_size=256, win_size=1024):
     """
-    Short Fourier Transformation, very naive
+    Short Fourier Transformation, rewritten very naively so that my tiny brain can understand
     """
     if np.max(x) > 1 or np.min(x) < -1:
         warnings.warn("input audio should be normalized to [-1,1]")

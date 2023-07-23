@@ -8,7 +8,9 @@
 
 ## Licence
 
-`snfa` is released under `ISC Licence`, as shown [here](/LICENCE). The file `stft.py` is copied from `librosa` and obeys the same ISC Licence but different copyright claim.
+`snfa` is released under `ISC Licence`, as shown [here](/LICENCE).
+
+The file `stft.py` contains code copied from `librosa` which obeys the same `ISC` Licence but different copyright claim. A copy of `librosa`'s licence can be found [here](https://github.com/librosa/librosa/blob/main/LICENSE.md).
 
 ## Credit
 
