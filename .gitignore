@@ -1,3 +1,6 @@
 notebook/
-corpus/
 __pycache__/
+runs/
+ckpt/
+.vscode/
+*.bin
