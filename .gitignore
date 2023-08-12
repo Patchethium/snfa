@@ -4,3 +4,6 @@ runs/
 ckpt/
 .vscode/
 *.bin
+*.egg-info
+build/
+dist/
