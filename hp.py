@@ -2,6 +2,7 @@ hp = {
     "hid_dim": 128,
     "phone_dim": 40,
     "reconstr_weight": 30,
+    "sr": 16000,
     "n_fft": 1024,
     "n_mels": 128,
     "hop_size": 256,
