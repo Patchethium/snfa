@@ -20,7 +20,7 @@ Download the pretrained `cv_jp.bin` file from [release](https://github.com/Patch
 ```python
 import snfa
 
-aligner = snfa.aligner("cv_jp.bin")
+aligner = snfa.Aligner("cv_jp.bin")
 transcript = "k o N n i ch i w a"
 
 # you can also use `scipy` or `wavfile` as long as you normalize it to [-1,1]
@@ -44,9 +44,9 @@ I'll cover this part if it's needed by anyone. Please let me know by creating an
 
 `snfa` is released under `ISC Licence`, as shown [here](/LICENCE).
 
-The file `aligner/stft.py` contains code adapted from `librosa` which obeys `ISC Licence` with different copyright claim. A copy of `librosa`'s licence can be found in [librosa's repo](https://github.com/librosa/librosa/blob/main/LICENSE.md).
+The file `snfa/stft.py` contains code adapted from `librosa` which obeys `ISC Licence` with different copyright claim. A copy of `librosa`'s licence can be found in [librosa's repo](https://github.com/librosa/librosa/blob/main/LICENSE.md).
 
-The file `aligner/backtrack.py` contains code adapted from `torchaudio` which obeys `BSD 2-Clause "Simplified" License`. A copy of `torchaudio`'s licence can be found in [torchaudio's repo](https://github.com/pytorch/audio/blob/main/LICENSE).
+The file `snfa/backtrack.py` contains code adapted from `torchaudio` which obeys `BSD 2-Clause "Simplified" License`. A copy of `torchaudio`'s licence can be found in [torchaudio's repo](https://github.com/pytorch/audio/blob/main/LICENSE).
 
 ## Credit
 
