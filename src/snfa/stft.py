@@ -168,10 +168,10 @@ def normalize(
         if fill is True:
             raise Exception("Cannot normalize with norm=0 and fill=True")
 
-        length = np.sum(mag > 0, axis=axis, keepdims=True, dtype=mag.dtype)
+        length = np.sum(mag > 0, axis=axis, keepdims=True, dtype=mag.dtype)  # type: ignore
 
     elif np.issubdtype(type(norm), np.number) and norm > 0:
-        length = np.sum(mag**norm, axis=axis, keepdims=True) ** (1.0 / norm)
+        length = np.sum(mag**norm, axis=axis, keepdims=True) ** (1.0 / norm)  # type: ignore
 
         if axis is None:
             fill_norm = mag.size ** (-1.0 / norm)

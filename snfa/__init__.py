@@ -1,1 +1,0 @@
-from snfa import *

@@ -6,8 +6,8 @@ FIXME: far slower than PyTorch, needs optimization
 from io import BufferedReader
 from typing import Iterable, List
 import numpy as np
-import stft
-import viterbi as viterbi
+from . import stft
+from . import viterbi
 
 
 def sigmoid(x):
