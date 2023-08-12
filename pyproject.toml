@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snfa"
-version = "0.0.1"
+version = "0.0.5"
 authors = [{ name = "Patchethium" }]
 description = "a simple neural forced aligner for phoneme to audio alignment"
 readme = "README.md"
