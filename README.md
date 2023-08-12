@@ -6,17 +6,16 @@
 - Numpy as the only dependency
 - MFA comparable alignment quality
 
-> [!NOTE]  
-> You still need `PyTorch` and some other libs if you want to do training.
-
-> [!WARNING]  
-> WIP, not functional
+**Note**: You still need `PyTorch` and some other libs if you want to do training.
 
 ## Inference
 
 ```bash
 pip install snfa
 ```
+Download the pretrained `cv_jp.bin` file from release.
+
+`cv_jp.bin` is weight file trained with Japanese Common Voice Corpus 14.0, 6/28/2023, the model weight is released into `Public Domain`.
 
 ```python
 import snfa
@@ -34,12 +33,7 @@ print(segment)
 
 ## Training
 
-First export python path, I'm tired of handling python module imports
-```bash
-# bash / zsh / fish
-export PYTHONPATH=.
-# No idea of the equivalent in Windows Powershell...
-```
+I'll cover this part if it's needed by anyone. Please let me know by creating an issue if you need.
 
 ## Todos
 
