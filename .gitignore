@@ -7,3 +7,4 @@ ckpt/
 *.egg-info
 build/
 dist/
+*.wav

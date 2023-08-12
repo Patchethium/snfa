@@ -21,12 +21,12 @@ Download the pretrained `cv_jp.bin` file from [release](https://github.com/Patch
 import snfa
 
 aligner = snfa.Aligner("cv_jp.bin")
-transcript = "k o N n i ch i w a"
+transcript = "k o N n i ch i w a".split(" ")
 
 # you can also use `scipy` or `wavfile` as long as you normalize it to [-1,1]
 x, _ = librosa.load("sample.wav", sr=aligner.sr)
 
-segment = aligner(x, transcript)
+segment, path, trellis, labels = aligner(x, transcript)
 
 print(segment)
 ```
