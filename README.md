@@ -13,7 +13,7 @@
 ```bash
 pip install snfa
 ```
-Download the pretrained `cv_jp.bin` file from release.
+Download the pretrained `cv_jp.bin` file from [release](https://github.com/Patchethium/snfa/releases/latest).
 
 `cv_jp.bin` is weight file trained with Japanese Common Voice Corpus 14.0, 6/28/2023, the model weight is released into `Public Domain`.
 
