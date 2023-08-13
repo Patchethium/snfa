@@ -40,7 +40,6 @@ I'll cover this part if it's needed by anyone. Please let me know by creating an
 - Rust crate
 - multi-language
 - Storing `pau` index in binary model
-- Option to convert frame number into milisecond
 - Record and warn the user when score is too low
 
 ## Licence
@@ -49,7 +48,7 @@ I'll cover this part if it's needed by anyone. Please let me know by creating an
 
 The file `snfa/stft.py` contains code adapted from `librosa` which obeys `ISC Licence` with different copyright claim. A copy of `librosa`'s licence can be found in [librosa's repo](https://github.com/librosa/librosa/blob/main/LICENSE.md).
 
-The file `snfa/backtrack.py` contains code adapted from `torchaudio` which obeys `BSD 2-Clause "Simplified" License`. A copy of `torchaudio`'s licence can be found in [torchaudio's repo](https://github.com/pytorch/audio/blob/main/LICENSE).
+The file `snfa/viterbi.py` contains code adapted from `torchaudio` which obeys `BSD 2-Clause "Simplified" License`. A copy of `torchaudio`'s licence can be found in [torchaudio's repo](https://github.com/pytorch/audio/blob/main/LICENSE).
 
 ## Credit
 

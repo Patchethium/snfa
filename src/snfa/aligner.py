@@ -22,11 +22,13 @@ def softmax(x, axis=-1):
     e_x = np.exp(x - np.max(x, axis, keepdims=True))
     return e_x / np.sum(e_x, axis, keepdims=True)
 
+
 def l1_normalize(arr, axis=None):
     arr = arr - np.min(arr)
     norm = np.sum(np.abs(arr), axis=axis, keepdims=True)
     normalized_arr = arr / norm
     return normalized_arr
+
 
 def log_softmax(x, axis=-1):
     return np.log(softmax(x, axis))
@@ -79,12 +81,10 @@ class GRU:
 class Aligner:
     def __init__(self, filename: str = "model.bin"):
         f = open(filename, "rb")
-        
+
         # Read metadata first, 8 is the amount of metadata entries
         # each entry is one int32 (4 bytes)
-        meta_data: np.ndarray = np.frombuffer(
-            f.read(8 * 4), np.int32, count=8
-        )
+        meta_data: np.ndarray = np.frombuffer(f.read(8 * 4), np.int32, count=8)
         # the entry list
         [
             self.n_fft,
@@ -159,7 +159,7 @@ class Aligner:
             raise Exception("phoneme not in model's phoneme set")
         return tokens
 
-    def align(self, x, ph):
+    def align(self, x, ph, use_sec=False):
         mel = self.mel(x)
         indices = self.get_indices(ph)
 
@@ -171,10 +171,15 @@ class Aligner:
         path = viterbi.backtrack(trellis)
 
         segments = viterbi.merge_repeats(path, indices)
+        if use_sec:
+            for seg in segments:
+                seg.start = seg.start * self.hop_size / self.sr
+                seg.end = seg.end * self.hop_size / self.sr
         return segments, path, trellis, emission, labels
 
-    def __call__(self, x: np.ndarray, ph: List[str]):
-        return self.align(x, ph)
+    def __call__(self, x: np.ndarray, ph: List[str], use_sec=False):
+        return self.align(x, ph, use_sec)
+
 
 if __name__ == "__main__":
     alinger = Aligner("cv_jp.bin")
