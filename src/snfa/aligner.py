@@ -22,6 +22,11 @@ def softmax(x, axis=-1):
     e_x = np.exp(x - np.max(x, axis, keepdims=True))
     return e_x / np.sum(e_x, axis, keepdims=True)
 
+def l1_normalize(arr, axis=None):
+    arr = arr - np.min(arr)
+    norm = np.sum(np.abs(arr), axis=axis, keepdims=True)
+    normalized_arr = arr / norm
+    return normalized_arr
 
 def log_softmax(x, axis=-1):
     return np.log(softmax(x, axis))
@@ -147,9 +152,6 @@ class Aligner:
         mel = np.fliplr(mel)
         return mel
 
-    def _norm_labels(self, labels) -> np.ndarray:
-        return softmax(labels[:, 1:], axis=1)
-
     def get_indices(self, ph):
         try:
             tokens = np.array([int(self.phone_set.index(p)) for p in ph])
@@ -162,13 +164,14 @@ class Aligner:
         indices = self.get_indices(ph)
 
         labels = self.model_forward(mel)
-        labels = self._norm_labels(labels)
 
-        trellis = viterbi.get_trellis(labels, indices)
+        emission = l1_normalize(labels[:, 1:], axis=1)[:, indices]
+
+        trellis = viterbi.get_trellis(emission)
         path = viterbi.backtrack(trellis)
 
         segments = viterbi.merge_repeats(path, indices)
-        return segments, path, trellis, labels
+        return segments, path, trellis, emission, labels
 
     def __call__(self, x: np.ndarray, ph: List[str]):
         return self.align(x, ph)

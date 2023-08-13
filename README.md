@@ -39,6 +39,9 @@ I'll cover this part if it's needed by anyone. Please let me know by creating an
 
 - Rust crate
 - multi-language
+- Storing `pau` index in binary model
+- Option to convert frame number into milisecond
+- Record and warn the user when score is too low
 
 ## Licence
 

@@ -42,21 +42,21 @@ class Point:
     time_index: int
 
 
-def get_trellis(emission: np.ndarray, tokens: np.ndarray) -> np.ndarray:
+def get_trellis(emission: np.ndarray) -> np.ndarray:
     """
     Get a cost matrix `trellis` from emission
     using Viterbi algorithm.
     """
-    num_frames, num_tokens = emission.shape[0], tokens.shape[0]
+    num_frames, num_tokens = emission.shape
     trellis = np.zeros((num_frames, num_tokens))
-    trellis[1:, 0] = np.cumsum(emission[1:, tokens[0]], 0)
+    trellis[1:, 0] = np.cumsum(emission[1:, 0], 0)
     trellis[0, 1:] = -np.inf
     trellis[-num_tokens + 1 :, 0] = np.inf
 
     for t in range(num_frames - 1):
         candidate = np.maximum(
-            trellis[t, 1:] + emission[t + 1, tokens[1:]],
-            trellis[t, :-1] + emission[t + 1, tokens[1:]],
+            trellis[t, 1:] + emission[t + 1, 1:],
+            trellis[t, :-1] + emission[t + 1, 1:],
         )
         trellis[t + 1, 1:] = candidate
 
