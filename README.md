@@ -26,7 +26,7 @@ transcript = "k o N n i ch i w a".split(" ")
 # you can also use `scipy` or `wavfile` as long as you normalize it to [-1,1]
 x, _ = librosa.load("sample.wav", sr=aligner.sr)
 
-segment, path, trellis, labels = aligner(x, transcript)
+segments, path, trellis, emission, labels = aligner(x, transcript)
 
 print(segment)
 ```
