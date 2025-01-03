@@ -7,9 +7,8 @@ from typing import Dict
 import torch
 import argparse
 import os
-from hp import hp
+from train.hp import hp
 import numpy as np
-
 
 def main(args):
     assert os.path.isfile(args.model)

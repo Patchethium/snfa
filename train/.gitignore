@@ -1,0 +1,4 @@
+out/
+corpus/
+*.pth
+*.ipynb

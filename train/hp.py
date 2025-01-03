@@ -1,0 +1,16 @@
+hp = {
+    "hid_dim": 128,
+    "sr": 16000,
+    "n_fft": 1024,
+    "n_mels": 80,
+    "hop_size": 256,
+    "win_size": 1024,
+    "epochs": 5,
+    "batch_size": 8,
+    "corpus_name": "common_voice_jp",
+    "learning_rate": 1e-4,
+    "plot_interval": 100,
+    "save_interval_epoch": 1,
+    "corpus_path": "corpus/ja",
+    "out_dir": "out",
+}

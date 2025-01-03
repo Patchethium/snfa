@@ -1,53 +1,51 @@
-from typing import Optional
 from torch import nn, Tensor
-import torch.nn.functional as F
+import torch
+import math
+from monotonic_align import maximum_path
 
 
-class Encoder(nn.Module):
-    def __init__(
-        self, mel_dim: int, hid_dim: int, phone_dim: int
-    ) -> None:
-        super(Encoder, self).__init__()
-        self.rnn1 = nn.GRU(
-            input_size=mel_dim,
-            hidden_size=hid_dim,
-            bidirectional=True,
-        )
-        self.rnn2 = nn.GRU(
-            input_size=2 * hid_dim,
-            hidden_size=hid_dim,
-            bidirectional=True,
-        )
-        self.fc = nn.Linear(2 * hid_dim, phone_dim + 1)
-        self.softmax = nn.LogSoftmax(2)
+class Aligner(nn.Module):
+    """
+    A very simple MLP with 3 hidden layers, ReLU activation and dropout.
+    """
+    def __init__(self, n_ph: int, dim: int, n_mels: int, dropout: float = 0.1):
+        super().__init__()
+        self.ph_emb = nn.Embedding(n_ph, dim)
+        self.rnn = nn.GRU(dim, dim, 1, batch_first=True, bidirectional=True)
+        self.fc = nn.Linear(dim * 2, n_mels)
+        self.n_mels = n_mels
 
-    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        x, _ = self.rnn1(x)
-        x = F.leaky_relu(x, 0.01)
-        x, _ = self.rnn2(x)
-        x = F.leaky_relu(x, 0.01)
+    def _forward(
+        self, ph: Tensor, mel: Tensor, ph_mask: Tensor, mel_mask: Tensor
+    ) -> Tensor:
+        x = self.ph_emb(ph)
+        x, _ = self.rnn(x)
         x = self.fc(x)
-        x = self.softmax(x)
-        if mask is not None:
-            x = x * mask
-        return x
+        with torch.no_grad():
+            attn_mask = ph_mask.unsqueeze(2) & mel_mask.unsqueeze(1) # [B, Tp, Tm]
+            const = -0.5 * math.log(2 * math.pi) * mel.shape[-1]  # scalar
+            factor = -0.5 * torch.ones(
+                x.shape, dtype=x.dtype, device=x.device
+            )  # [B, Tp, Nm]
+            y_square = torch.matmul(
+                factor, (mel**2).transpose(1, 2)
+            )  # [B,Tp,Nm] @ [B,Nm,Tm] = [B, Tp, Tm]
+            y_mu_double = torch.matmul(
+                2.0 * (factor * x), mel.transpose(1, 2)
+            )  # [B, Tp, Nm] @ [B, Nm, Tm] = [B, Tp, Tm]
+            mu_square = torch.sum(factor * (x**2), 2).unsqueeze(-1)  # [B,Tp,1]
+            log_prior = y_square - y_mu_double + mu_square + const  # [B, Tp, Tm]
+            log_prior = log_prior * attn_mask
+            attn = maximum_path(log_prior, attn_mask)
+            attn = attn.detach()  # [B, Tp, Tm]
+        return attn, x
 
+    def forward(self, ph: Tensor, mel: Tensor, ph_mask: Tensor, mel_mask: Tensor):
+        attn, ph = self._forward(ph, mel, ph_mask, mel_mask)
+        expanded = torch.matmul(attn.transpose(1,2), ph)
+        prior_loss = ((expanded - mel).pow(2) * mel_mask.unsqueeze(-1)).sum() / mel_mask.sum() / self.n_mels
+        return attn, expanded, prior_loss
 
-class Decoder(nn.Module):
-    def __init__(self, mel_dim: int, hid_dim: int, phone_dim: int) -> None:
-        super(Decoder, self).__init__()
-        hid_dim *= 2
-        self.layers = nn.Sequential(
-            nn.Linear(phone_dim, hid_dim),
-            nn.LeakyReLU(0.01),
-            nn.Linear(hid_dim, hid_dim),
-            nn.LeakyReLU(0.01),
-            nn.Linear(hid_dim, mel_dim),
-        )
-
-    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:  # [S,B,P+1]
-        x = x[:, :, 1:]  # [S,B,P], remove blank note
-        x = self.layers(x)
-        if mask is not None:
-            x = x * mask
-        return x
+    def inference(self, x: Tensor, mel:Tensor,ph_mask: Tensor, mel_mask: Tensor):
+        attn, x = self._forward(x, mel, ph_mask, mel_mask)
+        return attn
