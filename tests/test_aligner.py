@@ -1,9 +1,13 @@
-from snfa import Aligner
+"""Test module, what can I say?"""
+
 import jpreprocess as jpp
 import torchaudio as ta
 
+from snfa import Aligner
+
 
 def test_aligner():
+    """Tests aligner."""
     aligner = Aligner()
     jp = jpp.jpreprocess()
 
@@ -13,11 +17,11 @@ def test_aligner():
     wav, sr = ta.load(wav_file)
     if sr != aligner.sr:
         wav = ta.functional.resample(wav, sr, aligner.sr)
-    
+
     wav = wav.numpy()
 
-    with open(text_file, "r") as f:
+    with open(text_file) as f:
         text = f.readline().rstrip()
-    
+
     phoneme = jp.g2p(text).lower().split()
     _ = aligner.align(wav, phoneme, pad_pause=True)

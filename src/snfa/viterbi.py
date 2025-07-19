@@ -30,9 +30,10 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
-from typing import List, Tuple
-import numpy as np
 from dataclasses import dataclass
+from typing import List, Tuple
+
+import numpy as np
 
 
 def get_trellis(emission: np.ndarray, tokens: np.ndarray, blank_id=0) -> np.ndarray:

@@ -1,15 +1,20 @@
+"""Runs STFT(Short Time Fourier Transformation) related processes with numpy."""
+
 import numpy as np
 
 
 def hz_to_mel(f):
+    """Linear to Mel-scale."""
     return 2595 * np.log10(1 + f / 700)
 
 
 def mel_to_hz(m):
+    """Mel to linear scale."""
     return 700 * (10 ** (m / 2595) - 1)
 
 
 def mel_filterbank(sr, n_fft, n_mels, fmin=0, fmax=None):
+    """Mel Filterbank."""
     if fmax is None:
         fmax = sr // 2
 
@@ -28,9 +33,10 @@ def mel_filterbank(sr, n_fft, n_mels, fmin=0, fmax=None):
     return filterbank
 
 
-def stft(
+def spectrogram(
     signal, n_fft=1024, win_length=1024, hop_length=160, window_fn=np.hanning, p=2
 ):
+    """Wavform to its STFT Amplitude Spectrogram."""
     window = window_fn(win_length)
     frames = []
     for i in range(0, len(signal) - win_length + 1, hop_length):
@@ -52,7 +58,8 @@ def mel_spectrogram(
     to_db=False,
     log: bool = True,
 ):
-    spec = stft(signal, n_fft=n_fft, hop_length=hop_length, p=p)
+    """Mel spectrogram."""
+    spec = spectrogram(signal, n_fft=n_fft, hop_length=hop_length, p=p)
     mel_fb = mel_filterbank(sr, n_fft, n_mels, fmin, fmax)
     mel_spec = np.dot(mel_fb, spec)
     if to_db:

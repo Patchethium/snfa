@@ -1,6 +1,8 @@
-import importlib
+import importlib.resources as resources
 from typing import List, Optional, Tuple
+
 import numpy as np
+
 from snfa.stft import mel_spectrogram
 from snfa.viterbi import viterbi
 
@@ -95,14 +97,14 @@ class GRU:
         return self.forward(x, h)
 
 
-def get_asset_path(filename) -> str:
-    return importlib.resources.files("snfa.models").joinpath(filename)
+def _get_asset_path(filename) -> str:
+    return resources.files("snfa.models").joinpath(filename)
 
 
 class Aligner:
     def __init__(self, filename: Optional[str] = None):
         if filename is None:
-            filename = get_asset_path("jp.npz")
+            filename = _get_asset_path("jp.npz")
         weights = np.load(filename, allow_pickle=True)
 
         new_weight = {}
@@ -201,9 +203,9 @@ class Aligner:
         List of phoneme, start time, end time, score
         """
         if len(wav.shape) == 2:
-            x = np.mean(wav, axis=0)
+            wav = np.mean(wav, axis=0)
         mel = mel_spectrogram(
-            x,
+            wav,
             sr=self.sr,
             n_fft=self.n_fft,
             hop_length=self.hop_size,

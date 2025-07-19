@@ -1,5 +1,6 @@
-from .aligner import Aligner
 import os.path
+
+from .aligner import Aligner
 
 # make internal modules invisible
 __path__ = [os.path.dirname(__file__)]
