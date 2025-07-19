@@ -187,7 +187,7 @@ class Aligner:
             print("WARN: phoneme not in phoneme set, check it with `Aligner.phone_set`")
         return tokens
 
-    def align(self, x: np.ndarray, ph: List[str], pad_pause: bool = True):
+    def align(self, wav: np.ndarray, ph: List[str], pad_pause: bool = True):
         """
         Params
         ---
@@ -200,8 +200,8 @@ class Aligner:
         segments: List[Tuple[str, int, int, float]]
         List of phoneme, start time, end time, score
         """
-        if len(x.shape) == 2:
-            x = np.mean(x, axis=0)
+        if len(wav.shape) == 2:
+            x = np.mean(wav, axis=0)
         mel = mel_spectrogram(
             x,
             sr=self.sr,

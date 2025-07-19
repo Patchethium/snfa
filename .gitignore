@@ -8,7 +8,7 @@ ckpt/
 build/
 dist/
 *.wav
-*.mp3
+/*.mp3
 logs/
 vendor/
 *.ipynb
