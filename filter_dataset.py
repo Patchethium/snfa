@@ -1,6 +1,7 @@
-import pandas as pd
-from pathlib import Path
 import argparse
+from pathlib import Path
+
+import pandas as pd
 
 # TODO: We installed a whole `pandas` lib just to do this
 # hand write this without pandas in the future

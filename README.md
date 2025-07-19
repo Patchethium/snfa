@@ -59,6 +59,14 @@ uv sync
 
 Download [Common Voice Dataset](https://commonvoice.mozilla.org/en) and extract it somewhere.
 
+We use the split from whole `validated.tsv`, while filtered out the `dev` and `test` split.
+
+Filter the dataset:
+```bash
+uv run filter_dataset.py -d /path/to/common/voice/
+```
+
+Start training:
 ```bash
 uv run -c config.yaml -d /path/to/common/voice/
 ```
