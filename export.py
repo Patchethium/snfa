@@ -1,54 +1,49 @@
 """
 Exports PyTorch's state dict into binary file,
-doesn't help in reducing model size
-but makes the model readable for numpy.
+reducing model size while making the model readable for numpy.
 """
-from typing import Dict
-import torch
+
 import argparse
 import os
-from hp import hp
 import numpy as np
+from train import PHONE_SET, Config, Trainer
+from omegaconf import OmegaConf
 
 
 def main(args):
-    assert os.path.isfile(args.model)
-    if os.path.isfile(args.output):
-        print(f"{args.output} exists, overwrite? [y/N]")
+    cfg = OmegaConf.load(args.config)
+    cfg = Config(**cfg)
+
+    assert os.path.isfile(args.ckpt), f"Checkpoint file {args.ckpt} does not exist."
+    output = args.output + ".npz" if not args.output.endswith(".npz") else args.output
+    if os.path.isfile(output):
+        print(f"{output} exists, overwrite? [y/N]")
         if input() != str("y"):
             return
-    f = open(args.output, "wb")
 
-    # write meta data first
-    # use `\0`` for splitting symbols, hope no one uses it in phone set
-    phone_set_bytes = bytearray(
-        "\0".join(hp["phone_set"]), "ascii"
-    )  # FIXME: only ascii is supported
-    meta_data = np.ascontiguousarray(
-        np.array(
-            [
-                hp["n_fft"],
-                hp["hop_size"],
-                hp["win_size"],
-                hp["n_mels"],
-                hp["hid_dim"],
-                hp["phone_dim"],
-                hp["sr"],
-                len(phone_set_bytes),  # phone_set_bytes_len in aligner
-            ],
-            dtype=np.int32,
-        )
+    data = {}
+    meta_data = {
+        "n_mels": cfg.n_mels,
+        "sr": cfg.sr,
+        "dim": cfg.dim,
+        "hop_size": cfg.hop_size,
+        "win_size": cfg.win_size,
+        "n_fft": cfg.n_fft,
+        "phone_set": "\0".join(PHONE_SET),
+    }
+    data["meta_data"] = meta_data
+    ckpt = Trainer.load_from_checkpoint(
+        args.ckpt,
+        cfg=cfg,
+        map_location="cpu",
     )
-    f.write(memoryview(meta_data))  # type: ignore
-    f.write(memoryview(phone_set_bytes))
+    aligner = ckpt.model
+    aligner.eval()
+    for k, v in aligner.state_dict().items():
+        print(k, ":", v.shape)
+        data[k] = v.detach().cpu().half().numpy()
 
-    state_dict: Dict[str, torch.Tensor] = torch.load(args.model, map_location="cpu")
-    for k, v in state_dict.items():
-        print(k, "-", v.shape)
-        t = v.contiguous().view(-1).cpu().detach().type(torch.float32).numpy()
-        f.write(memoryview(t))
-
-    f.close()
+    np.savez_compressed(output, **data)
 
 
 if __name__ == "__main__":
@@ -61,11 +56,18 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "-m",
-        "--model",
+        "-c",
+        "--config",
+        type=str,
+        required=False,
+        default="config.yaml",
+        help="Path to the configuration file",
+    )
+    parser.add_argument(
+        "--ckpt",
         type=str,
         required=True,
-        help="PyTorch's `.pth` state dict file",
+        help="Lightning checkpoint file to export",
     )
     parser.add_argument(
         "-o",

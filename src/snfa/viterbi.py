@@ -1,16 +1,11 @@
-from typing import List
-import numpy as np
-from dataclasses import dataclass
-
-
 """
-Viterbi algorithm, adopted from `torchaudio` documentation, BSD 2-Clause Licence
+Viterbi algorithm, adopted from `torchaudio` documentation
 
 https://pytorch.org/audio/main/tutorials/forced_alignment_tutorial.html
 
 BSD 2-Clause License
 
-Copyright (c) 2017 Facebook Inc. (Soumith Chintala), 
+Copyright (c) 2017 Facebook Inc. (Soumith Chintala),
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -35,81 +30,99 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
+from typing import List, Tuple
+import numpy as np
+from dataclasses import dataclass
+
+
+def get_trellis(emission: np.ndarray, tokens: np.ndarray, blank_id=0) -> np.ndarray:
+    num_frame = emission.shape[0]
+    num_tokens = len(tokens)
+
+    trellis = np.zeros((num_frame, num_tokens))
+    trellis[1:, 0] = np.cumsum(emission[1:, blank_id], 0)
+    trellis[0, 1:] = -float("inf")
+    trellis[-num_tokens + 1 :, 0] = float("inf")
+
+    for t in range(num_frame - 1):
+        trellis[t + 1, 1:] = np.maximum(
+            # Score for staying at the same token
+            trellis[t, 1:] + emission[t, blank_id],
+            # Score for changing to the next token
+            trellis[t, :-1] + emission[t, tokens[1:]],
+        )
+    return trellis
+
 
 @dataclass
 class Point:
     token_index: int
     time_index: int
+    score: float
 
 
-def get_trellis(emission: np.ndarray) -> np.ndarray:
-    """
-    Get a cost matrix `trellis` from emission
-    using Viterbi algorithm.
-    """
-    num_frames, num_tokens = emission.shape
-    trellis = np.zeros((num_frames, num_tokens))
-    trellis[1:, 0] = np.cumsum(emission[1:, 0], 0)
-    trellis[0, 1:] = -np.inf
-    trellis[-num_tokens + 1 :, 0] = np.inf
-
-    for t in range(num_frames - 1):
-        candidate = np.maximum(
-            trellis[t, 1:] + emission[t + 1, 1:],
-            trellis[t, :-1] + emission[t + 1, 1:],
-        )
-        trellis[t + 1, 1:] = candidate
-
-    return trellis
-
-
-def backtrack(trellis) -> List[Point]:
-    """
-    Get a path with maxium likelihood from cost matrix,
-    basically just picks the better one in staying and transferring.
-    """
+def backtrack(
+    trellis: np.ndarray, emission: np.ndarray, tokens: List[str], blank_id=0
+) -> List[Point]:
     t, j = trellis.shape[0] - 1, trellis.shape[1] - 1
 
-    path = [Point(j, t)]
+    path = [Point(j, t, np.exp(emission[t, blank_id]))]
     while j > 0:
-        stayed = trellis[t - 1, j]
-        changed = trellis[t - 1, j - 1]
+        # Should not happen but just in case
+        assert t > 0
 
+        # 1. Figure out if the current position was stay or change
+        # Frame-wise score of stay vs change
+        p_stay = emission[t - 1, blank_id]
+        p_change = emission[t - 1, tokens[j]]
+
+        # Context-aware score for stay vs change
+        stayed = trellis[t - 1, j] + p_stay
+        changed = trellis[t - 1, j - 1] + p_change
+
+        # Update position
         t -= 1
         if changed > stayed:
             j -= 1
-        path.append(Point(j, t))
 
+        # Store the path with frame-wise probability.
+        prob = np.exp((p_change if changed > stayed else p_stay))
+        path.append(Point(j, t, prob))
+
+    # Now j == 0, which means, it reached the SoS.
+    # Fill up the rest for the sake of visualization
     while t > 0:
-        path.append(Point(j, t - 1))
+        prob = np.exp(emission[t - 1, blank_id])
+        path.append(Point(j, t - 1, prob))
         t -= 1
 
     return path[::-1]
 
 
-@dataclass
-class Segment:
-    label: str
-    start: int
-    end: int
-
-    @property
-    def length(self):
-        return self.end - self.start
-
-
-def merge_repeats(path, ph) -> List[Segment]:
+def merge_repeats(
+    path: List[Point], tokens: List[str]
+) -> List[Tuple[str, int, int, float]]:
     i1, i2 = 0, 0
-    segments: List[Segment] = []
+    segments = []
     while i1 < len(path):
         while i2 < len(path) and path[i1].token_index == path[i2].token_index:
             i2 += 1
+        score = sum(path[k].score for k in range(i1, i2)) / (i2 - i1)
         segments.append(
-            Segment(
-                ph[path[i1].token_index],
+            (
+                int(tokens[path[i1].token_index]),
                 path[i1].time_index,
                 path[i2 - 1].time_index + 1,
+                float(score),
             )
         )
         i1 = i2
     return segments
+
+
+def viterbi(
+    emission: np.ndarray, tokens: List[str], blank_id=0
+) -> List[Tuple[str, int, int, float]]:
+    trellis = get_trellis(emission, tokens, blank_id)
+    path = backtrack(trellis, emission, tokens, blank_id)
+    return merge_repeats(path, tokens)

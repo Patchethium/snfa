@@ -13,34 +13,78 @@
 ```bash
 pip install snfa
 ```
-Download the pretrained `cv_jp.bin` weights from [release](https://github.com/Patchethium/snfa/releases/latest).
 
-`cv_jp.bin` is a weight file trained on Japanese Common Voice Corpus 14.0, 6/28/2023. The model weight is released into `Public Domain`.
+A pre-trained model weight `jp.npz` is included.
+
+`jp.npz` is a weight file trained on Japanese Common Voice Corpus 14.0, 6/28/2023. The model weight is released into `Public Domain`.
 
 ```python
 import snfa
+import librosa # or soundfile, torchaudio, scipy, etc.
 
-aligner = snfa.Aligner("cv_jp.bin")
-transcript = "k o N n i ch i w a".split(" ")
 
-# you can also use `scipy` or `wavfile` as long as you normalize it to [-1,1]
-x, _ = librosa.load("sample.wav", sr=aligner.sr)
+aligner = snfa.Aligner() # use custom model by passing its path to this function
+# NOTE: the default model is uncased, it doesn't make difference between `U` and `u`
+transcript = "k o N n i ch i w a".lower().split(" ") # so remember lower it here
 
-segments, path, trellis, emission, labels = aligner(x, transcript)
+# you can also use `scipy` or `wavfile` as long as you normalized it to [-1,1]
+# and sample rate matches model's
+# `numpy` can't handle the wav part, sorry kid
+x, sr = librosa.load("sample.wav", sr=aligner.sr)
+
+segments = aligner(x, transcript)
 
 print(segment)
+# (phoneme label, start mili-sec, end mili-sec, score)
+# [('pau', 0, 908, 0.9583546351318474),
+#  ('k', 908, 928, 0.006900709283433312),
+#  ('o', 928, 1088, 0.795996002234283),
+# ...]
+
+# NOTE: The timestamps are in mili-sec, you can convert them to the indices on wavform by
+wav_index = int(timestamp * aligner.sr / 1000)
 ```
 
-## Training
+## Development
 
-I'll cover this part if it's needed by anyone. Please let me know by creating an issue if you need.
+We use [`uv`](https://docs.astral.sh/uv/) to manage dependencies.
+
+The following command will install them.
+
+```bash
+uv sync
+```
+
+### Training
+
+Download [Common Voice Dataset](https://commonvoice.mozilla.org/en) and extract it somewhere.
+
+```bash
+uv run -c config.yaml -d /path/to/common/voice/
+```
+
+Checkpoints will be saved to `logs/lightning_logs/`
+
+Be noted that the `-d` should point to where the `*.tsv`s are. In Japanese CV dataset, it's sub directory `ja`.
+
+## Bundle
+
+When bundling app with `pyinstaller`, add
+
+```python
+from PyInstaller.utils.hooks import collect_data_files
+
+data = collect_data_files('snfa')
+
+# consume the data in Analyzer
+```
+
+To bundle the model weights properly. I'd appreciate it if you offer a better way.
 
 ## Todos
 
 - Rust crate
 - multi-language
-- Storing `pau` index in binary model
-- Record and warn the user when score is too low
 
 ## Licence
 

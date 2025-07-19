@@ -1,173 +1,304 @@
-from typing import List, Tuple
-import librosa
-import numpy as np
+import os
+from typing import Optional, Tuple, Iterable
+
 import torch
-from hp import hp
-from train.model import Decoder, Encoder
-from torch.utils.data import DataLoader, Dataset
-import pandas as pd
-from torch.nn import CTCLoss, MSELoss
-from os import path
-from torch.nn.functional import one_hot
-from torch.utils.data import random_split
-from torch.nn.utils.rnn import pad_sequence
-from torch.optim import Adam
-from torch.utils.tensorboard.writer import SummaryWriter
-from torch.nn.utils import clip_grad
-from torch.optim.lr_scheduler import ExponentialLR
+from torch import nn, Tensor
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+import torchaudio as ta
+import jpreprocess as jpp
+import argparse
+import lightning.pytorch as L
+
+from dataclasses import dataclass
+import csv
+from omegaconf import OmegaConf
+from lightning.pytorch import loggers
+
+PHONE_SET = [
+    "a",
+    "b",
+    "by",
+    "ch",
+    "cl",
+    "d",
+    "dy",
+    "e",
+    "f",
+    "g",
+    "gy",
+    "h",
+    "hy",
+    "i",
+    "j",
+    "k",
+    "ky",
+    "m",
+    "my",
+    "n",
+    "ny",
+    "o",
+    "p",
+    "py",
+    "r",
+    "ry",
+    "s",
+    "sh",
+    "t",
+    "ts",
+    "ty",
+    "u",
+    "v",
+    "w",
+    "y",
+    "z",
+    "pau",
+]
+
+PHONE_SET = ["pad"] + PHONE_SET
 
 
-class SnfaDataset(Dataset):
-    def __init__(self, mel_path: str, tsv_path: str, device: torch.device) -> None:
-        super().__init__()
-        self.mel_path = mel_path
-        if not path.exists(mel_path):
-            raise Exception("Mel path doesn't exist")
-        if not path.exists(tsv_path):
-            raise Exception("tsv path doesn't exist")
-        self.df = pd.read_table(tsv_path)
-        phoneme = self.df["phoneme"]
-        self.paths: pd.Series[str] = self.df["path"]
-        self.phone_set: List[str] = hp["phone_set"]
-        self.phone_vec = []
-        self.device = device
-        for sentence in phoneme:
-            phone_seq = sentence.split(" ")
-            idx_seq = [
-                self.phone_set.index(phone) + 1 for phone in phone_seq
-            ]  # leave 0 for blank note
-            idx_seq = torch.LongTensor(idx_seq).to(device)
-            self.phone_vec.append(idx_seq)
+@dataclass
+class Config:
+    dim: int
+
+    n_mels: int
+    sr: int
+    n_fft: int
+    win_size: int
+    hop_size: int
+    max_len: int
+    cache_dir: str
+
+    max_epoch: int
+    lr: float
+    decay: float
+    batch_size: int
+    num_workers: int = 4
+
+
+class CVDataset(Dataset):
+    def __init__(self, root: str, split: str | Iterable[str], cfg: Config):
+        self.cfg = cfg
+        self.root = root
+        self.data = []
+        if isinstance(split, str):
+            split = [split]
+        for s in split:
+            with open(os.path.join(root, s), "r") as f:
+                lines = f.readlines()
+            reader = csv.reader(lines, delimiter="\t")
+            _ = next(reader)  # skip header
+            for data in reader:
+                file, text, upvote, downvote = [data[i] for i in range(1, 5)]
+                if upvote < downvote:
+                    continue
+                self.data.append((file, text))
+
+        self.mel = ta.transforms.MelSpectrogram(
+            sample_rate=cfg.sr,
+            n_fft=cfg.n_fft,
+            win_length=cfg.win_size,
+            hop_length=cfg.hop_size,
+            n_mels=cfg.n_mels,
+            f_min=0.0,
+            f_max=None,
+        )
+        self.jpp = jpp.jpreprocess()
+        self.phone_set = {phone: idx for idx, phone in enumerate(PHONE_SET)}
+
+        if not os.path.exists(cfg.cache_dir):
+            os.makedirs(cfg.cache_dir)
 
     def __len__(self):
-        return len(self.paths)
+        return len(self.data)
 
-    def __getitem__(self, index) -> Tuple[torch.Tensor, torch.Tensor]:
-        filename: str = self.paths[index]
-        mel = np.load(path.join(self.mel_path, filename + ".npy"))
-        mel = librosa.power_to_db(mel, ref=np.max)
-        mel = librosa.util.normalize(mel, axis=1) + 1.0
-        mel_tensor = torch.from_numpy(mel).to(self.device)  # [N,S]
-        mel_tensor = mel_tensor.transpose(0, 1)  # [S,N]
-        ph = self.phone_vec[index]
-        return mel_tensor, ph
+    def _g2p(self, text: str) -> Tensor:
+        ph = self.jpp.g2p(text).lower()
+        ph = ph.split()  # split by whitespace
+        ph = ["pau"] + ph + ["pau"]  # add start and end pause
+        ph_idx = [self.phone_set[p] for p in ph if p in self.phone_set]
+        return torch.tensor(ph_idx, dtype=torch.long)  # pad is given in PHONE_SET
+
+    def __getitem__(self, index):
+        file, text = self.data[index]
+        if os.path.exists(os.path.join(self.cfg.cache_dir, file + ".pt")):
+            mel, phoneme = torch.load(os.path.join(self.cfg.cache_dir, file + ".pt"))
+            return mel, phoneme
+        path = os.path.join(self.root, "clips", file)
+        wav, sr = ta.load(path)
+        if sr != 16000:
+            wav = ta.functional.resample(wav, sr, 16000)
+        if len(wav.shape) > 1:
+            wav = wav.mean(dim=0, keepdim=True)
+        wav = wav.squeeze(0)
+        mel = self.mel(wav)
+        mel = torch.log(mel + 1e-7).transpose(0, 1)  # (T, C)
+
+        phoneme = self._g2p(text)
+        if mel.shape[1] > self.cfg.max_len:
+            print(f"WARNING, {file} exceed max mel length")
+            mel = mel[:, : self.cfg.max_len]
+
+        torch.save((mel, phoneme), os.path.join(self.cfg.cache_dir, file + ".pt"))
+        return mel, phoneme
 
 
-def make_pad_mask(lens: List[int]):
-    mask = [torch.ones(l) for l in [rows for rows in lens]]
-    pad_mask = pad_sequence(mask, batch_first=True, padding_value=0)
-    return pad_mask.transpose(0, 1).unsqueeze(-1)
+def len2mask(lens: Tensor) -> Tensor:
+    """Create a mask tensor from lengths."""
+    max_len = lens.max().item()
+    batch_size = lens.shape[0]
+    mask = torch.arange(max_len, device=lens.device).expand(
+        batch_size, max_len
+    ) < lens.unsqueeze(1)
+    return mask
 
 
-def pad_collate(batch):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    (mels, phs) = zip(*batch)
-    m_lens = [m.shape[0] for m in mels]
-    p_lens = [p.shape[0] for p in phs]
+def collate_fn(batch):
+    mel, phoneme = zip(*batch)
+    mel_lens = torch.LongTensor([m.shape[0] for m in mel])
+    phoneme_lens = torch.LongTensor([p.shape[0] for p in phoneme])
+    mel_mask = len2mask(mel_lens)
+    mel = nn.utils.rnn.pad_sequence(mel, batch_first=True, padding_value=0.0)
+    phoneme = nn.utils.rnn.pad_sequence(phoneme, batch_first=True, padding_value=0)
+    return mel, phoneme, mel_lens, phoneme_lens, mel_mask
 
-    mel_pad = pad_sequence(mels, batch_first=False, padding_value=0)
-    ph_pad = pad_sequence(phs, batch_first=False, padding_value=0)
 
-    m_mask = make_pad_mask(m_lens).to(device)
-    p_mask = make_pad_mask(p_lens).to(device)
-
-    return (
-        mel_pad,
-        ph_pad,
-        torch.LongTensor(m_lens).to(device),
-        torch.LongTensor(p_lens).to(device),
-        m_mask,
-        p_mask,
+def get_dataloaders(root: str, cfg: Config) -> Tuple[DataLoader, DataLoader]:
+    train_dataset = CVDataset(root, "filtered_validated.tsv", cfg)
+    val_dataset = CVDataset(root, "dev.tsv", cfg)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        num_workers=cfg.num_workers,
+        collate_fn=collate_fn,
     )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        collate_fn=collate_fn,
+    )
+    return train_loader, val_loader
+
+
+class Aligner(nn.Module):
+    def __init__(self, input_dim=80, hidden_dim=256, output_dim=len(PHONE_SET)):
+        super().__init__()
+        self.n_mels = input_dim
+        self.pre = nn.Linear(input_dim, hidden_dim)
+        self.bi_rnn = nn.GRU(
+            hidden_dim,
+            hidden_dim // 2,
+            num_layers=2,
+            bidirectional=True,
+            batch_first=True,
+        )
+        self.fc = nn.Linear(hidden_dim, output_dim)
+
+    def _forward(self, x, mask: Optional[Tensor]):  # x: (batch, time, mel)
+        x = self.pre(x)
+        if mask is not None:
+            x = x * mask.unsqueeze(-1)
+        r = x
+        x, _ = self.bi_rnn(x)
+        x = x + r
+        o = self.fc(x)
+        logits = torch.log_softmax(o, dim=-1)  # (batch, time, output_dim)
+        return logits
+
+    def forward(
+        self,
+        mel: Tensor,
+        phoneme: Tensor,
+        mel_lens: Tensor,
+        phoneme_lens: Tensor,
+        mel_mask: Tensor,
+    ):
+        logits = self._forward(mel, mel_mask)
+        ctc_loss = F.ctc_loss(
+            logits.transpose(0, 1),  # (time, batch, output_dim)
+            phoneme,
+            mel_lens,
+            phoneme_lens,
+            blank=0,
+            reduction="mean",
+            zero_infinity=True,
+        )
+        return ctc_loss
+
+    def infer(self, mel: Tensor, mel_mask: Optional[Tensor] = None):
+        logits = self._forward(mel, mel_mask)
+        return logits
+
+
+class Trainer(L.LightningModule):
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self.cfg = cfg
+        self.model = Aligner(cfg.n_mels, cfg.dim, len(PHONE_SET))
+
+    def forward(self, mel):
+        return self.model.infer(mel)
+
+    def training_step(self, batch, batch_idx):
+        mel, phoneme, mel_lens, phoneme_lens, mel_mask = batch
+        ctc_loss = self.model(mel, phoneme, mel_lens, phoneme_lens, mel_mask)
+        loss = ctc_loss
+        losses = {
+            "loss": loss,
+            "ctc_loss": ctc_loss,
+        }
+        self.log_dict({"train/" + k: v for k, v in losses.items()})
+        return losses
+
+    def validation_step(self, batch, batch_idx):
+        losses = self.training_step(batch, batch_idx)
+        self.log_dict({"val/" + k: v for k, v in losses.items()})
+        return losses
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.cfg.lr)
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=1, gamma=self.cfg.decay
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
 
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    encoder = Encoder(
-        mel_dim=hp["n_mels"],
-        hid_dim=hp["hid_dim"],
-        phone_dim=hp["phone_dim"],
-    ).to(device)
-    decoder = Decoder(
-        mel_dim=hp["n_mels"],
-        hid_dim=hp["hid_dim"],
-        phone_dim=hp["phone_dim"],
-    ).to(device)
-    dataset = SnfaDataset(
-        mel_path=f"corpus/{hp['corpus_name']}/mels",
-        tsv_path=f"corpus/{hp['corpus_name']}/train_clean.tsv",
-        device=device,
+    L.seed_everything(3407)
+    parser = argparse.ArgumentParser(description="Train the SNFA model")
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=str,
+        required=False,
+        default="config.yaml",
+        help="Path to the configuration file",
     )
-
-    train_ds, val_ds = random_split(dataset, [0.9, 0.1])
-
-    train_dl, val_dl = [
-        DataLoader(
-            ds, batch_size=hp["batch_size"], shuffle=True, collate_fn=pad_collate
-        )
-        for ds in (train_ds, val_ds)
-    ]
-
-    ctc = CTCLoss(blank=0, zero_infinity=True)
-    mse = MSELoss()
-    reconstr_weight: float = hp["reconstr_weight"]
-
-    step = 0
-
-    optimizer = Adam(
-        list(encoder.parameters()) + list(decoder.parameters()),
-        lr=hp["learning_rate"]
+    parser.add_argument(
+        "-d",
+        "--data_dir",
+        type=str,
+        required=True,
+        default="data",
+        help="Path to the dataset directory",
     )
-    scheduler = ExponentialLR(optimizer, gamma=0.9)
-    epochs = hp["epochs"]
-
-    writer = SummaryWriter()
-
-    for epoch in range(1, epochs + 1):
-        for mel, phoneme, mel_lens, ph_lens, mel_mask, _ in train_dl:
-            step += 1
-            optimizer.zero_grad()
-            label = encoder.forward(mel, mel_mask)
-
-            ctc_loss = ctc.forward(label, phoneme.transpose(0, 1), mel_lens, ph_lens)
-            reconstructed = decoder.forward(label, mel_mask)
-            mse_loss = mse.forward(reconstructed, mel)
-            loss = ctc_loss + reconstr_weight * mse_loss
-            loss.backward()
-
-            clip_grad.clip_grad_norm_(decoder.parameters(), 0.1)
-            clip_grad.clip_grad_norm_(encoder.parameters(), 0.1)
-
-            optimizer.step()
-
-            writer.add_scalar("Train/CTC", ctc_loss, step)
-            writer.add_scalar("Train/MSE", mse_loss, step)
-            writer.add_scalar("Train/Total", loss, step)
-
-            with torch.no_grad():
-                encoder.eval()
-                decoder.eval()
-                mel, phoneme, mel_lens, ph_lens, mel_mask, _ = next(iter(val_dl))
-                label = encoder.forward(mel, mel_mask)
-                ctc_loss = ctc.forward(
-                    label, phoneme.transpose(0, 1), mel_lens, ph_lens
-                )
-                reconstructed = decoder.forward(label, mel_mask)
-                mse_loss = mse.forward(reconstructed, mel)
-                loss = ctc_loss + reconstr_weight * mse_loss
-                writer.add_scalar("Val/CTC", ctc_loss, step)
-                writer.add_scalar("Val/MSE", mse_loss, step)
-                writer.add_scalar("Val/Total", loss, step)
-
-                if step % hp["ckpt_step"] == 0:
-                    torch.save(encoder.state_dict(), f"e-{step}.pth")
-                    torch.save(decoder.state_dict(), f"d-{step}.pth")
-
-                encoder.train()
-                decoder.train()
-
-        print(f"epoch: {epoch+1}")
-        scheduler.step()
+    args = parser.parse_args()
+    cfg = OmegaConf.load(args.config)
+    cfg = Config(**cfg)
+    model = Trainer(cfg)
+    train, val = get_dataloaders(args.data_dir, cfg)
+    logger = loggers.TensorBoardLogger("logs")
+    trainer = L.Trainer(
+        max_epochs=cfg.max_epoch,
+        accelerator="auto",
+        log_every_n_steps=20,
+        logger=logger,
+    )
+    trainer.fit(model, train_dataloaders=train, val_dataloaders=val)
 
 
 if __name__ == "__main__":

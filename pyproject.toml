@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "snfa"
-version = "0.0.1"
+version = "0.1.0"
 authors = [{ name = "Patchethium" }]
 description = "a simple neural forced aligner for phoneme to audio alignment"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: ISC License (ISCL)",
@@ -18,3 +18,36 @@ dependencies = ["numpy"]
 
 [project.urls]
 "Homepage" = "https://github.com/Patchethium/snfa"
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "lightning>=2.5.2",
+    "torch>=1.13.1",
+    "torchaudio>=0.13.1",
+    "omegaconf>=2.3.0",
+    "tensorboard>=2.20.0",
+    "jpreprocess>=0.1.5",
+    "ipywidgets>=8.1.7",
+    "matplotlib>=3.10.3",
+    "pandas>=2.3.1",
+    "black>=25.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+snfa = ["models/*.npz"]
+
+[tool.setuptools]
+include-package-data = true

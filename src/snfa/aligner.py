@@ -1,21 +1,12 @@
-"""
-one file inference with numpy
-FIXME: far slower than PyTorch, needs optimization
-"""
-
-from io import BufferedReader
-from typing import Iterable, List
+import importlib
+from typing import List, Optional, Tuple
 import numpy as np
-from . import stft
-from . import viterbi
+from snfa.stft import mel_spectrogram
+from snfa.viterbi import viterbi
 
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
-
-
-def leaky_relu(x, alpha=0.01):
-    return np.maximum(alpha * x, x)
 
 
 def softmax(x, axis=-1):
@@ -23,164 +14,227 @@ def softmax(x, axis=-1):
     return e_x / np.sum(e_x, axis, keepdims=True)
 
 
-def l1_normalize(arr, axis=None):
-    arr = arr - np.min(arr)
-    norm = np.sum(np.abs(arr), axis=axis, keepdims=True)
-    normalized_arr = arr / norm
-    return normalized_arr
-
-
 def log_softmax(x, axis=-1):
     return np.log(softmax(x, axis))
 
 
-def read_weight(f: BufferedReader, shape: Iterable[int]):
-    length = 1
-    for s in shape:
-        length *= s
-    bytes = f.read(length * 4)
-    arr = np.frombuffer(bytes, dtype=np.float32, count=length)
-    arr = arr.reshape(shape)
-    return arr
+class Linear:
+    def __init__(self, weight, bias) -> None:
+        self.weight = weight
+        self.bias = bias
+
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        return np.matmul(x, self.weight.T) + self.bias
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        return self.forward(x)
+
+
+class GRUCell:
+    def __init__(self, weight_ih, weight_hh, bias_ih, bias_hh):
+        self.ih = Linear(weight_ih, bias_ih)
+        self.hh = Linear(weight_hh, bias_hh)
+
+    def forward(self, x: np.ndarray, h: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        x: [D]
+        h: [D]
+        """
+        if h is None:
+            h = np.zeros(
+                [
+                    self.hh.weight.shape[-1],
+                ]
+            )
+        rzn_ih = self.ih.forward(x)
+        rzn_hh = self.hh.forward(h)
+
+        rz_ih, n_ih = (
+            rzn_ih[: rzn_ih.shape[-1] * 2 // 3],
+            rzn_ih[rzn_ih.shape[-1] * 2 // 3 :],
+        )
+        rz_hh, n_hh = (
+            rzn_hh[: rzn_hh.shape[-1] * 2 // 3],
+            rzn_hh[rzn_hh.shape[-1] * 2 // 3 :],
+        )
+
+        rz = sigmoid(rz_ih + rz_hh)
+        r, z = np.split(rz, 2, axis=-1)
+
+        n = np.tanh(n_ih + r * n_hh)
+        h = (1 - z) * n + z * h
+
+        return h
 
 
 class GRU:
-    def __init__(self, hid_dim: int, input_dim: int, reverse: bool = False) -> None:
-        self.h_dim = hid_dim
-        self.i_dim = input_dim
+    def __init__(self, cell: GRUCell, reverse: bool = False):
+        self.cell = cell
         self.reverse = reverse
 
-    def from_file(self, f: BufferedReader) -> None:
-        self.wih = read_weight(f, [self.h_dim * 3, self.i_dim])
-        self.whh = read_weight(f, [self.h_dim * 3, self.h_dim])
-        self.bih = read_weight(f, [self.h_dim * 3])
-        self.bhh = read_weight(f, [self.h_dim * 3])
+    def forward(
+        self, x, h: Optional[np.ndarray] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        x: [T, D], unbatched
+        """
+        if self.reverse:
+            x = np.flip(x, axis=0)
+        outputs = []
+        for i in range(x.shape[0]):
+            h = self.cell.forward(x[i], h)
+            outputs.append(h)
+        outputs = np.stack(outputs)
+        if self.reverse:
+            outputs = np.flip(outputs, axis=0)
+        return outputs, h
 
-    def __call__(self, x: np.ndarray) -> np.ndarray:
-        h = np.zeros([self.h_dim])
-        start, end = (0, x.shape[0]) if not self.reverse else (x.shape[0] - 1, -1)
-        step = 1 if not self.reverse else -1
-        out = np.zeros([x.shape[0], self.h_dim])  # pre allocate
-        for index in range(start, end, step):
-            rzn_ih = np.matmul(x[index], self.wih.T) + self.bih
-            rzn_hh = np.matmul(h, self.whh.T) + self.bhh
+    def __call__(
+        self, x, h: Optional[np.ndarray] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        return self.forward(x, h)
 
-            i_r, i_z, i_n = np.split(rzn_ih, 3)
-            h_r, h_z, h_n = np.split(rzn_hh, 3)
 
-            r = sigmoid(i_r + h_r)
-            z = sigmoid(i_z + h_z)
-
-            n = np.tanh(i_n + r * h_n)
-
-            h = (1.0 - z) * n + z * h
-            out[index, :] = h
-        return out
+def get_asset_path(filename) -> str:
+    return importlib.resources.files("snfa.models").joinpath(filename)
 
 
 class Aligner:
-    def __init__(self, filename: str = "model.bin"):
-        f = open(filename, "rb")
+    def __init__(self, filename: Optional[str] = None):
+        if filename is None:
+            filename = get_asset_path("jp.npz")
+        weights = np.load(filename, allow_pickle=True)
 
-        # Read metadata first, 8 is the amount of metadata entries
-        # each entry is one int32 (4 bytes)
-        meta_data: np.ndarray = np.frombuffer(f.read(8 * 4), np.int32, count=8)
-        # the entry list
-        [
-            self.n_fft,
-            self.hop_size,
-            self.win_size,
-            self.m,
-            self.h,
-            self.p,
-            self.sr,
-            phone_set_bytes_len,
-        ] = meta_data
+        new_weight = {}
+        for k, v in weights.items():
+            # convert them back to f32, it's faster on cpu
+            if v.dtype == np.float16:
+                new_weight[k] = v.astype(np.float32)
+            else:
+                new_weight[k] = v
+        weights = new_weight
 
-        self.phone_set = (
-            f.read(phone_set_bytes_len).decode("ascii").split("\0")
-        )  # one ascii character takes 1 byte
+        meta_data = weights["meta_data"].item()
+
+        self.n_mels = meta_data["n_mels"]
+        self.sr = meta_data["sr"]
+        self.dim = meta_data["dim"]
+        self.hop_size = meta_data["hop_size"]
+        self.win_size = meta_data["win_size"]
+        self.n_fft = meta_data["n_fft"]
+        self.phone_set = meta_data["phone_set"].split("\0")
+        self.phone_dict = {p: i for i, p in enumerate(self.phone_set)}
 
         # Now load the model weights
-        self.gru1 = GRU(self.h, self.m)
-        self.gru1_r = GRU(self.h, self.m, reverse=True)
-        self.gru2 = GRU(self.h, self.h * 2)
-        self.gru2_r = GRU(self.h, self.h * 2, reverse=True)
-
-        self.gru1.from_file(f)
-        self.gru1_r.from_file(f)
-        self.gru2.from_file(f)
-        self.gru2_r.from_file(f)
-
-        self.wfc = read_weight(f, [self.p + 1, self.h * 2])
-        self.bfc = read_weight(f, [self.p + 1])
-
-        # check if we reach the EOF
-        last_byte = f.read(1)
-        if not len(last_byte) == 0:
-            raise Warning("Model has more bytes than specified in meta-data")
-
-        f.close()
-
-    def model_forward(self, x) -> np.ndarray:
-        """
-        Params
-        ---
-        x: mel, [T,M]
-
-        Returns
-        ---
-        labels: [T, P+1]
-        """
-        x_l0 = self.gru1(x)
-        x_l0_r = self.gru1_r(x)
-        x_l1_i = leaky_relu(np.concatenate([x_l0, x_l0_r], axis=1))
-
-        x_l1 = self.gru2(x_l1_i)
-        x_l1_r = self.gru2_r(x_l1_i)
-        x_fc = leaky_relu(np.concatenate([x_l1, x_l1_r], axis=1))
-
-        x = np.dot(x_fc, self.wfc.T) + self.bfc
-        x = log_softmax(x)
-        return x
-
-    def mel(self, x: np.ndarray):
-        mel = stft.mel_spec(
-            x, self.n_fft, self.hop_size, self.win_size, self.m, self.sr
+        self.pre = Linear(weights["pre.weight"], weights["pre.bias"])
+        self.rnn0 = GRU(
+            GRUCell(
+                weights["bi_rnn.weight_ih_l0"],
+                weights["bi_rnn.weight_hh_l0"],
+                weights["bi_rnn.bias_ih_l0"],
+                weights["bi_rnn.bias_hh_l0"],
+            ),
+            False,
         )
-        mel = stft.normalize(stft.power_to_db(mel, ref=np.max), axis=1) + 1.0
-        mel = np.fliplr(mel)
-        return mel
+        self.rnn0_rev = GRU(
+            GRUCell(
+                weights["bi_rnn.weight_ih_l0_reverse"],
+                weights["bi_rnn.weight_hh_l0_reverse"],
+                weights["bi_rnn.bias_ih_l0_reverse"],
+                weights["bi_rnn.bias_hh_l0_reverse"],
+            ),
+            True,
+        )
+        self.rnn1 = GRU(
+            GRUCell(
+                weights["bi_rnn.weight_ih_l1"],
+                weights["bi_rnn.weight_hh_l1"],
+                weights["bi_rnn.bias_ih_l1"],
+                weights["bi_rnn.bias_hh_l1"],
+            ),
+            False,
+        )
+        self.rnn1_rev = GRU(
+            GRUCell(
+                weights["bi_rnn.weight_ih_l1_reverse"],
+                weights["bi_rnn.weight_hh_l1_reverse"],
+                weights["bi_rnn.bias_ih_l1_reverse"],
+                weights["bi_rnn.bias_hh_l1_reverse"],
+            ),
+            True,
+        )
+        self.fc = Linear(
+            weights["fc.weight"],
+            weights["fc.bias"],
+        )
+
+    def forward(self, mel: np.ndarray) -> np.ndarray:
+        x = self.pre.forward(mel)
+        f, _ = self.rnn0.forward(x)
+        r, _ = self.rnn0_rev.forward(x)
+        x = np.concatenate([f, r], axis=-1)
+        f, _ = self.rnn1.forward(x)
+        r, _ = self.rnn1_rev.forward(x)
+        x = np.concatenate([f, r], axis=-1)
+        x = self.fc.forward(x)
+        logits = log_softmax(x, axis=-1)
+        return logits
 
     def get_indices(self, ph):
         try:
-            tokens = np.array([int(self.phone_set.index(p)) for p in ph])
+            tokens = np.array([int(self.phone_dict[p]) for p in ph])
         except ValueError:
-            raise Exception("phoneme not in model's phoneme set")
+            print("WARN: phoneme not in phoneme set, check it with `Aligner.phone_set`")
         return tokens
 
-    def align(self, x, ph, use_sec=False):
-        mel = self.mel(x)
-        indices = self.get_indices(ph)
+    def align(self, x: np.ndarray, ph: List[str], pad_pause: bool = True):
+        """
+        Params
+        ---
+        x: audio signal, [T]
+        ph: phoneme sequence, List[str]
+        pad_pause: if True, pad start and end pause (the `pau` symbol)
 
-        labels = self.model_forward(mel)
+        Returns
+        ---
+        segments: List[Tuple[str, int, int, float]]
+        List of phoneme, start time, end time, score
+        """
+        if len(x.shape) == 2:
+            x = np.mean(x, axis=0)
+        mel = mel_spectrogram(
+            x,
+            sr=self.sr,
+            n_fft=self.n_fft,
+            hop_length=self.hop_size,
+            n_mels=self.n_mels,
+            p=2,
+            to_db=False,
+            log=True,
+        )
+        mel = mel.T
+        if pad_pause:
+            ph = ["pau"] + ph + ["pau"]
+        tokens = self.get_indices(ph)
+        logits = self.forward(mel)
+        segments = viterbi(logits, tokens, blank_id=0)
+        # TODO: optimize this, it looks nasty
+        segments = [
+            (
+                self.phone_set[seg[0]],
+                max(
+                    int((seg[1] * self.hop_size - self.win_size // 2) / self.sr * 1000),
+                    0,
+                ),  # use the middle of frame window
+                max(
+                    int((seg[2] * self.hop_size - self.win_size // 2) / self.sr * 1000),
+                    0,
+                ),
+                seg[3],
+            )
+            for seg in segments
+        ]
+        return segments
 
-        emission = l1_normalize(labels[:, 1:], axis=1)[:, indices]
-
-        trellis = viterbi.get_trellis(emission)
-        path = viterbi.backtrack(trellis)
-
-        segments = viterbi.merge_repeats(path, indices)
-        if use_sec:
-            for seg in segments:
-                seg.start = seg.start * self.hop_size / self.sr
-                seg.end = seg.end * self.hop_size / self.sr
-        return segments, path, trellis, emission, labels
-
-    def __call__(self, x: np.ndarray, ph: List[str], use_sec=False):
-        return self.align(x, ph, use_sec)
-
-
-if __name__ == "__main__":
-    alinger = Aligner("cv_jp.bin")
-    print(alinger.hop_size)
+    def __call__(self, x: np.ndarray, ph: List[str]):
+        return self.align(x, ph)

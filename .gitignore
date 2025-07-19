@@ -8,3 +8,10 @@ ckpt/
 build/
 dist/
 *.wav
+*.mp3
+logs/
+vendor/
+*.ipynb
+/uv.lock
+/.venv/
+*.npz
