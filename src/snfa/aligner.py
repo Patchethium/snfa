@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from snfa.stft import mel_spectrogram
-from snfa.viterbi import viterbi
+from snfa.viterbi import Segment, viterbi
 
 
 def sigmoid(x):
@@ -189,21 +189,26 @@ class Aligner:
             print("WARN: phoneme not in phoneme set, check it with `Aligner.phone_set`")
         return tokens
 
-    def align(self, wav: np.ndarray, ph: List[str], pad_pause: bool = True):
+    def align(
+        self,
+        wav: np.ndarray,
+        ph: List[str],
+        pad_pause: bool = True,
+    ) -> List[Segment]:
         """
         Params
         ---
         x: audio signal, [T]
         ph: phoneme sequence, List[str]
-        pad_pause: if True, pad start and end pause (the `pau` symbol)
+        pad_pause: if True, pad start and end pause (the `pau` symbol); default: True
 
         Returns
         ---
         segments: List[Tuple[str, int, int, float]]
         List of phoneme, start time, end time, score
         """
-        if len(wav.shape) == 2:
-            wav = np.mean(wav, axis=0)
+        wav = wav.squeeze()
+        assert wav.ndim == 1, "Audio data should be in shape (T,)"
         mel = mel_spectrogram(
             wav,
             sr=self.sr,
@@ -211,7 +216,6 @@ class Aligner:
             hop_length=self.hop_size,
             n_mels=self.n_mels,
             p=2,
-            to_db=False,
             log=True,
         )
         mel = mel.T
@@ -219,23 +223,17 @@ class Aligner:
             ph = ["pau"] + ph + ["pau"]
         tokens = self.get_indices(ph)
         logits = self.forward(mel)
-        segments = viterbi(logits, tokens, blank_id=0)
+        segments = viterbi(logits, tokens, phone_set=self.phone_set, blank_id=0)
         # TODO: optimize this, it looks nasty
-        segments = [
-            (
-                self.phone_set[seg[0]],
-                max(
-                    int((seg[1] * self.hop_size - self.win_size // 2) / self.sr * 1000),
-                    0,
-                ),  # use the middle of frame window
-                max(
-                    int((seg[2] * self.hop_size - self.win_size // 2) / self.sr * 1000),
-                    0,
-                ),
-                seg[3],
+        for seg in segments:
+            seg.start = max(
+                int((seg.start * self.hop_size - self.win_size // 2) / self.sr * 1000),
+                0,
             )
-            for seg in segments
-        ]
+            seg.end = max(
+                int((seg.end * self.hop_size - self.win_size // 2) / self.sr * 1000),
+                0,
+            )
         return segments
 
     def __call__(self, x: np.ndarray, ph: List[str]):

@@ -25,12 +25,18 @@ import librosa # or soundfile, torchaudio, scipy, etc.
 
 aligner = snfa.Aligner() # use custom model by passing its path to this function
 # NOTE: the default model is uncased, it doesn't make difference between `U` and `u`
-transcript = "k o N n i ch i w a".lower().split(" ") # so remember lower it here
+transcript = "k o N n i ch i w a".lower().split(" ") # remember to lower it here
 
-# you can also use `scipy` or `wavfile` as long as you normalized it to [-1,1]
-# and sample rate matches model's
-# `numpy` can't handle the wav part, sorry kid
+# you can also use `scipy` or `wavfile` as long as it's 
+# 1. mono channel numpy array with shape (T,), dtype=np.float32
+# 2. normalized to [-1,1]
+# 3. sample rate matches model's `sr`
 x, sr = librosa.load("sample.wav", sr=aligner.sr)
+# trim the audio for better performance
+x, _ = librosa.effects.trim(x, top_db=20)
+# we also provide a utility function to trim
+# it's basically ripped off from librosa so you don't have to install it
+x, _ = snfa.trim_audio(x, top_db=20)
 
 segments = aligner(x, transcript)
 
@@ -98,9 +104,11 @@ To bundle the model weights properly. I'd appreciate it if you offer a better wa
 
 `snfa` is released under `ISC Licence`, as shown [here](/LICENCE).
 
-The file `snfa/stft.py` contains code adapted from `librosa` which obeys `ISC Licence` with different copyright claim. A copy of `librosa`'s licence can be found in [librosa's repo](https://github.com/librosa/librosa/blob/main/LICENSE.md).
+The file `snfa/stft.py` and `snfa/util.py` contains code adapted from `librosa` which obeys `ISC Licence` with different copyright claim. A copy of `librosa`'s licence can be found in [librosa's repo](https://github.com/librosa/librosa/blob/main/LICENSE.md).
 
 The file `snfa/viterbi.py` contains code adapted from `torchaudio` which obeys `BSD 2-Clause "Simplified" License`. A copy of `torchaudio`'s licence can be found in [torchaudio's repo](https://github.com/pytorch/audio/blob/main/LICENSE).
+
+The testing audio file is ripped 
 
 ## Credit
 

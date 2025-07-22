@@ -31,7 +31,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List
 
 import numpy as np
 
@@ -63,7 +63,7 @@ class Point:
 
 
 def backtrack(
-    trellis: np.ndarray, emission: np.ndarray, tokens: List[str], blank_id=0
+    trellis: np.ndarray, emission: np.ndarray, tokens: np.ndarray, blank_id=0
 ) -> List[Point]:
     t, j = trellis.shape[0] - 1, trellis.shape[1] - 1
 
@@ -100,9 +100,23 @@ def backtrack(
     return path[::-1]
 
 
+@dataclass
+class Segment:
+    phoneme: str
+    start: int
+    end: int
+    score: float
+
+    def __str__(self):
+        return f"phoneme: {self.phoneme}, start: {self.start}, end: {self.end}, score: {self.score}"
+
+    def __repr__(self):
+        return f"Segment(phoneme={self.phoneme!r}, start={self.start!r}, end={self.end!r}, score={self.score!r})"
+
+
 def merge_repeats(
-    path: List[Point], tokens: List[str]
-) -> List[Tuple[str, int, int, float]]:
+    path: List[Point], tokens: np.ndarray, phone_set: List[str]
+) -> List[Segment]:
     i1, i2 = 0, 0
     segments = []
     while i1 < len(path):
@@ -110,8 +124,8 @@ def merge_repeats(
             i2 += 1
         score = sum(path[k].score for k in range(i1, i2)) / (i2 - i1)
         segments.append(
-            (
-                int(tokens[path[i1].token_index]),
+            Segment(
+                phone_set[tokens[path[i1].token_index]],
                 path[i1].time_index,
                 path[i2 - 1].time_index + 1,
                 float(score),
@@ -122,8 +136,8 @@ def merge_repeats(
 
 
 def viterbi(
-    emission: np.ndarray, tokens: List[str], blank_id=0
-) -> List[Tuple[str, int, int, float]]:
+    emission: np.ndarray, tokens: np.ndarray, phone_set: List[str], blank_id=0
+) -> List[Segment]:
     trellis = get_trellis(emission, tokens, blank_id)
     path = backtrack(trellis, emission, tokens, blank_id)
-    return merge_repeats(path, tokens)
+    return merge_repeats(path, tokens, phone_set)

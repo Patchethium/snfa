@@ -3,7 +3,7 @@
 import jpreprocess as jpp
 import torchaudio as ta
 
-from snfa import Aligner
+from snfa import Aligner, trim_audio
 
 
 def test_aligner():
@@ -25,3 +25,11 @@ def test_aligner():
 
     phoneme = jp.g2p(text).lower().split()
     _ = aligner.align(wav, phoneme, pad_pause=True)
+
+def test_trim():
+    """Tests trim audio."""
+    wav_file = "tests/common_voice_ja_19482480.mp3"
+    wav, _ = ta.load(wav_file)
+    wav = wav.numpy()
+    trimmed, _ = trim_audio(wav, top_db=20, frame_length=1024, hop_length=512)
+    assert trimmed.shape != wav.shape # should be different after trimming

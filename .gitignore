@@ -16,3 +16,4 @@ vendor/
 /.venv/
 *.npz
 !/demo.ipynb
+!/tests/*.wav
