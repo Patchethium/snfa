@@ -2,7 +2,7 @@
 
 `snfa` (Simple Neural Forced Aligner) is a phoneme-to-audio forced aligner built for embedded usage in python programs, with its only inference dependency being `numpy` and python 3.7 or later.
 
-- Tiny model size (2 MB)
+- Tiny model size (~1 MB)
 - Numpy as the only dependency
 - MFA comparable alignment quality
 
@@ -77,9 +77,9 @@ Start training:
 uv run -c config.yaml -d /path/to/common/voice/
 ```
 
-Checkpoints will be saved to `logs/lightning_logs/`
+Checkpoints and tensorboard logs will be saved to `logs/lightning_logs/`
 
-Be noted that the `-d` should point to where the `*.tsv`s are. In Japanese CV dataset, it's sub directory `ja`.
+Be noted that parameter `-d` should point to where the `*.tsv`s are. In Japanese CV dataset, it's sub directory `ja`.
 
 ## Bundle
 
@@ -108,7 +108,7 @@ The file `snfa/stft.py` and `snfa/util.py` contains code adapted from `librosa` 
 
 The file `snfa/viterbi.py` contains code adapted from `torchaudio` which obeys `BSD 2-Clause "Simplified" License`. A copy of `torchaudio`'s licence can be found in [torchaudio's repo](https://github.com/pytorch/audio/blob/main/LICENSE).
 
-The testing audio file is ripped 
+The testing audio file is ripped from Japanese Common Voice Corpus 14.0, 6/28/2023, Public Domain.
 
 ## Credit
 
