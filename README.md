@@ -81,6 +81,14 @@ Checkpoints and tensorboard logs will be saved to `logs/lightning_logs/`
 
 Be noted that parameter `-d` should point to where the `*.tsv`s are. In Japanese CV dataset, it's sub directory `ja`.
 
+### Exporting
+
+To use the model in `numpy`, export the checkpoint with
+
+```bash
+uv run export.py -c config.yaml --ckpt /path/to/checkpoint -o output.npz
+```
+
 ## Bundle
 
 When bundling app with `pyinstaller`, add
@@ -90,7 +98,7 @@ from PyInstaller.utils.hooks import collect_data_files
 
 data = collect_data_files('snfa')
 
-# consume the data in Analyzer
+# consume `data` in Analyzer
 ```
 
 To bundle the model weights properly. I'd appreciate it if you offer a better way.

@@ -5,9 +5,11 @@ reducing model size while making the model readable for numpy.
 
 import argparse
 import os
+
 import numpy as np
-from train import PHONE_SET, Config, Trainer
 from omegaconf import OmegaConf
+
+from train import PHONE_SET, Config, Trainer
 
 
 def main(args):
