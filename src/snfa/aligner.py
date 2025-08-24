@@ -172,15 +172,16 @@ class Aligner:
 
     def forward(self, mel: np.ndarray) -> np.ndarray:
         x = self.pre.forward(mel)
+        residual = x
         f, _ = self.rnn0.forward(x)
         r, _ = self.rnn0_rev.forward(x)
         x = np.concatenate([f, r], axis=-1)
         f, _ = self.rnn1.forward(x)
         r, _ = self.rnn1_rev.forward(x)
         x = np.concatenate([f, r], axis=-1)
+        x += residual
         x = self.fc.forward(x)
-        logits = log_softmax(x, axis=-1)
-        return logits
+        return x
 
     def get_indices(self, ph):
         try:
@@ -227,11 +228,11 @@ class Aligner:
         # TODO: optimize this, it looks nasty
         for seg in segments:
             seg.start = max(
-                int((seg.start * self.hop_size - self.win_size // 2) / self.sr * 1000),
+                int((seg.start * self.hop_size) / self.sr * 1000),
                 0,
             )
             seg.end = max(
-                int((seg.end * self.hop_size - self.win_size // 2) / self.sr * 1000),
+                int((seg.end * self.hop_size) / self.sr * 1000),
                 0,
             )
         return segments

@@ -41,7 +41,8 @@ def main(args):
     )
     aligner = ckpt.model
     aligner.eval()
-    for k, v in aligner.state_dict().items():
+    encoder = aligner.encoder
+    for k, v in encoder.state_dict().items():
         print(k, ":", v.shape)
         data[k] = v.detach().cpu().half().numpy()
 
@@ -76,8 +77,8 @@ if __name__ == "__main__":
         "--output",
         type=str,
         required=False,
-        default="model.bin",
-        help="Name of the output `.bin` file",
+        default="model.npz",
+        help="Name of the output `.npz` file",
     )
 
     args = parser.parse_args()

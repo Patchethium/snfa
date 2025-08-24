@@ -36,21 +36,26 @@ from typing import List
 import numpy as np
 
 
-def get_trellis(emission: np.ndarray, tokens: np.ndarray, blank_id=0) -> np.ndarray:
-    num_frame = emission.shape[0]
+def softmax(x, axis=-1):
+    e_x = np.exp(x - np.max(x, axis, keepdims=True))
+    return e_x / np.sum(e_x, axis, keepdims=True)
+
+
+def get_trellis(logits: np.ndarray, tokens: np.ndarray) -> np.ndarray:
+    trellis = logits[:, tokens - 1]
+    num_frame = trellis.shape[0]
     num_tokens = len(tokens)
 
-    trellis = np.zeros((num_frame, num_tokens))
-    trellis[1:, 0] = np.cumsum(emission[1:, blank_id], 0)
+    trellis[1:, 0] = np.cumsum(trellis[1:, 0], 0)
     trellis[0, 1:] = -float("inf")
     trellis[-num_tokens + 1 :, 0] = float("inf")
 
     for t in range(num_frame - 1):
-        trellis[t + 1, 1:] = np.maximum(
+        trellis[t + 1, 1:] += np.maximum(
             # Score for staying at the same token
-            trellis[t, 1:] + emission[t, blank_id],
+            trellis[t, 1:],
             # Score for changing to the next token
-            trellis[t, :-1] + emission[t, tokens[1:]],
+            trellis[t, :-1],
         )
     return trellis
 
@@ -59,27 +64,19 @@ def get_trellis(emission: np.ndarray, tokens: np.ndarray, blank_id=0) -> np.ndar
 class Point:
     token_index: int
     time_index: int
-    score: float
 
 
-def backtrack(
-    trellis: np.ndarray, emission: np.ndarray, tokens: np.ndarray, blank_id=0
-) -> List[Point]:
+def backtrack(trellis: np.ndarray) -> List[Point]:
     t, j = trellis.shape[0] - 1, trellis.shape[1] - 1
 
-    path = [Point(j, t, np.exp(emission[t, blank_id]))]
+    path = [Point(j, t)]
     while j > 0:
         # Should not happen but just in case
         assert t > 0
 
-        # 1. Figure out if the current position was stay or change
-        # Frame-wise score of stay vs change
-        p_stay = emission[t - 1, blank_id]
-        p_change = emission[t - 1, tokens[j]]
-
         # Context-aware score for stay vs change
-        stayed = trellis[t - 1, j] + p_stay
-        changed = trellis[t - 1, j - 1] + p_change
+        stayed = trellis[t - 1, j]
+        changed = trellis[t - 1, j - 1]
 
         # Update position
         t -= 1
@@ -87,14 +84,12 @@ def backtrack(
             j -= 1
 
         # Store the path with frame-wise probability.
-        prob = np.exp((p_change if changed > stayed else p_stay))
-        path.append(Point(j, t, prob))
+        path.append(Point(j, t))
 
     # Now j == 0, which means, it reached the SoS.
     # Fill up the rest for the sake of visualization
     while t > 0:
-        prob = np.exp(emission[t - 1, blank_id])
-        path.append(Point(j, t - 1, prob))
+        path.append(Point(j, t - 1))
         t -= 1
 
     return path[::-1]
@@ -105,13 +100,14 @@ class Segment:
     phoneme: str
     start: int
     end: int
-    score: float
 
     def __str__(self):
-        return f"phoneme: {self.phoneme}, start: {self.start}, end: {self.end}, score: {self.score}"
+        return f"phoneme: {self.phoneme}, start: {self.start}, end: {self.end}"
 
     def __repr__(self):
-        return f"Segment(phoneme={self.phoneme!r}, start={self.start!r}, end={self.end!r}, score={self.score!r})"
+        return (
+            f"Segment(phoneme={self.phoneme!r}, start={self.start!r}, end={self.end!r})"
+        )
 
 
 def merge_repeats(
@@ -122,13 +118,11 @@ def merge_repeats(
     while i1 < len(path):
         while i2 < len(path) and path[i1].token_index == path[i2].token_index:
             i2 += 1
-        score = sum(path[k].score for k in range(i1, i2)) / (i2 - i1)
         segments.append(
             Segment(
                 phone_set[tokens[path[i1].token_index]],
                 path[i1].time_index,
                 path[i2 - 1].time_index + 1,
-                float(score),
             )
         )
         i1 = i2
@@ -136,8 +130,11 @@ def merge_repeats(
 
 
 def viterbi(
-    emission: np.ndarray, tokens: np.ndarray, phone_set: List[str], blank_id=0
+    logits: np.ndarray, tokens: np.ndarray, phone_set: List[str], blank_id=0
 ) -> List[Segment]:
-    trellis = get_trellis(emission, tokens, blank_id)
-    path = backtrack(trellis, emission, tokens, blank_id)
+    emission = logits[:, 1:]
+    emission = softmax(emission, axis=-1)
+    emission = np.log(emission)
+    trellis = get_trellis(emission, tokens)
+    path = backtrack(trellis)
     return merge_repeats(path, tokens, phone_set)

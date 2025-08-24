@@ -9,7 +9,7 @@ max_len: 4096
 cache_dir: "vendor"
 
 # training
-max_epoch: 5
+max_epoch: 10
 lr: 1.0e-3
 decay: 0.5
 batch_size: 32

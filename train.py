@@ -6,6 +6,7 @@ from typing import Iterable, Optional, Tuple
 
 import jpreprocess as jpp
 import lightning.pytorch as L
+import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 import torchaudio as ta
@@ -102,6 +103,7 @@ class CVDataset(Dataset):
             n_mels=cfg.n_mels,
             f_min=0.0,
             f_max=None,
+            power=2
         )
         self.jpp = jpp.jpreprocess()
         self.phone_set = {phone: idx for idx, phone in enumerate(PHONE_SET)}
@@ -145,7 +147,7 @@ class CVDataset(Dataset):
 
 def len2mask(lens: Tensor) -> Tensor:
     """Create a mask tensor from lengths."""
-    max_len = lens.max().item()
+    max_len = int(lens.max().item())
     batch_size = lens.shape[0]
     mask = torch.arange(max_len, device=lens.device).expand(
         batch_size, max_len
@@ -153,13 +155,13 @@ def len2mask(lens: Tensor) -> Tensor:
     return mask
 
 
-def collate_fn(batch):
+def collate_fn(batch: list[tuple[Tensor, Tensor, Tensor]]):
     mel, phoneme = zip(*batch)
     mel_lens = torch.LongTensor([m.shape[0] for m in mel])
     phoneme_lens = torch.LongTensor([p.shape[0] for p in phoneme])
     mel_mask = len2mask(mel_lens)
-    mel = nn.utils.rnn.pad_sequence(mel, batch_first=True, padding_value=0.0)
-    phoneme = nn.utils.rnn.pad_sequence(phoneme, batch_first=True, padding_value=0)
+    mel = nn.utils.rnn.pad_sequence(mel, batch_first=True, padding_value=0.0) # type: ignore
+    phoneme = nn.utils.rnn.pad_sequence(phoneme, batch_first=True, padding_value=0) # type: ignore
     return mel, phoneme, mel_lens, phoneme_lens, mel_mask
 
 
@@ -184,29 +186,63 @@ def get_dataloaders(root: str, cfg: Config) -> Tuple[DataLoader, DataLoader]:
 
 
 class Aligner(nn.Module):
-    def __init__(self, input_dim=80, hidden_dim=256, output_dim=len(PHONE_SET)):
+    class Encoder(nn.Module):
+        def __init__(self, input_dim, hidden_dim, output_dim):
+            super().__init__()
+            self.pre = nn.Linear(input_dim, hidden_dim)
+            self.bi_rnn = nn.GRU(
+                hidden_dim,
+                hidden_dim // 2,
+                num_layers=2,
+                bidirectional=True,
+                batch_first=True,
+            )
+            self.fc = nn.Linear(hidden_dim, output_dim)
+
+        def forward(self, x, mask: Optional[Tensor] = None):
+            x = self.pre(x)
+            if mask is not None:
+                x = x * mask.unsqueeze(-1)
+            r = x
+            x, _ = self.bi_rnn(x)
+            x = x + r
+            logits = self.fc(x)
+            # logits = torch.log_softmax(logits, dim=-1)  # (batch, time, output_dim)
+            return logits
+
+    class Decoder(nn.Module):
+        """
+        3-layer MLP with lrelu activation
+        """
+
+        def __init__(self, input_dim, hidden_dim, output_dim):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.LeakyReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LeakyReLU(),
+                nn.Linear(hidden_dim, output_dim),
+            )
+
+        def forward(self, x):
+            x = x[:, :, 1:]  # remove blank token
+            # softmax
+            x = torch.softmax(x, dim=-1)
+            return self.net(x)
+
+    def __init__(self, input_dim=80, hidden_dim=256, output_dim=None):
         super().__init__()
+        if output_dim is None:
+            output_dim = len(PHONE_SET)
         self.n_mels = input_dim
-        self.pre = nn.Linear(input_dim, hidden_dim)
-        self.bi_rnn = nn.GRU(
-            hidden_dim,
-            hidden_dim // 2,
-            num_layers=2,
-            bidirectional=True,
-            batch_first=True,
-        )
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.encoder = self.Encoder(input_dim, hidden_dim, output_dim)
+        self.decoder = self.Decoder(output_dim - 1, hidden_dim, input_dim)
 
     def _forward(self, x, mask: Optional[Tensor]):  # x: (batch, time, mel)
-        x = self.pre(x)
-        if mask is not None:
-            x = x * mask.unsqueeze(-1)
-        r = x
-        x, _ = self.bi_rnn(x)
-        x = x + r
-        o = self.fc(x)
-        logits = torch.log_softmax(o, dim=-1)  # (batch, time, output_dim)
-        return logits
+        logits = self.encoder(x, mask)  # (batch, time, output_dim)
+        recon = self.decoder(logits)  # (batch, time, mel)
+        return logits, recon
 
     def forward(
         self,
@@ -216,7 +252,8 @@ class Aligner(nn.Module):
         phoneme_lens: Tensor,
         mel_mask: Tensor,
     ):
-        logits = self._forward(mel, mel_mask)
+        logits, recon = self._forward(mel, mel_mask)
+        logits = torch.log_softmax(logits, dim=-1)  # (batch, time, output_dim)
         ctc_loss = F.ctc_loss(
             logits.transpose(0, 1),  # (time, batch, output_dim)
             phoneme,
@@ -226,11 +263,15 @@ class Aligner(nn.Module):
             reduction="mean",
             zero_infinity=True,
         )
-        return ctc_loss
+        recon_loss = (
+            torch.abs((recon - mel) * mel_mask.unsqueeze(-1)).sum()
+            / mel_mask.sum()
+            / self.n_mels
+        )
+        return ctc_loss, recon_loss
 
     def infer(self, mel: Tensor, mel_mask: Optional[Tensor] = None):
-        logits = self._forward(mel, mel_mask)
-        return logits
+        return self._forward(mel, mel_mask)
 
 
 class Trainer(L.LightningModule):
@@ -244,16 +285,33 @@ class Trainer(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         mel, phoneme, mel_lens, phoneme_lens, mel_mask = batch
-        ctc_loss = self.model(mel, phoneme, mel_lens, phoneme_lens, mel_mask)
-        loss = ctc_loss
+        ctc_loss, recon_loss = self.model(
+            mel, phoneme, mel_lens, phoneme_lens, mel_mask
+        )
+        loss = ctc_loss + recon_loss
         losses = {
             "loss": loss,
             "ctc_loss": ctc_loss,
+            "recon_loss": recon_loss,
         }
         self.log_dict({"train/" + k: v for k, v in losses.items()})
         return losses
 
+    def plot_inference(self, mel: Tensor, logits: Tensor, recon: Tensor):
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15))
+        ax1.imshow(mel[0].detach().cpu().numpy().T, aspect="auto")
+        ax2.imshow(logits[0].detach().cpu().numpy().T, aspect="auto")
+        ax3.imshow(recon[0].detach().cpu().numpy().T, aspect="auto")
+        tensorboard = self.logger.experiment  # type: ignore
+        tensorboard.add_figure("inference", fig, self.current_epoch)
+        plt.close(fig)
+
     def validation_step(self, batch, batch_idx):
+        if batch_idx == 0:
+            # plot the inference result
+            mel, phoneme, mel_lens, phoneme_lens, mel_mask = batch
+            logits, recon = self.model.infer(mel, mel_mask)
+            self.plot_inference(mel, logits, recon)
         losses = self.training_step(batch, batch_idx)
         self.log_dict({"val/" + k: v for k, v in losses.items()})
         return losses
@@ -285,10 +343,14 @@ def main():
         default="data",
         help="Path to the dataset directory",
     )
+    parser.add_argument("--ckpt", type=str, default=None, help="Path to checkpoint to resume")
     args = parser.parse_args()
     cfg = OmegaConf.load(args.config)
-    cfg = Config(**cfg)
-    model = Trainer(cfg)
+    cfg = Config(**cfg)  # type: ignore
+    if args.ckpt is not None:
+        model = Trainer.load_from_checkpoint(args.ckpt, cfg=cfg)
+    else:
+        model = Trainer(cfg)
     train, val = get_dataloaders(args.data_dir, cfg)
     logger = loggers.TensorBoardLogger("logs")
     trainer = L.Trainer(
