@@ -89,6 +89,14 @@ To use the model in `numpy`, export the checkpoint with
 uv run export.py -c config.yaml --ckpt /path/to/checkpoint -o output.npz
 ```
 
+### Publishing
+
+Usually I am responsible for publishing the package to PyPI, this section serves as a reminder for myself.
+
+1. copy the exported `jp.npz` to `src/snfa/models/`
+2. uv run build
+3. uv run publish
+
 ## Bundle
 
 When bundling app with `pyinstaller`, add
