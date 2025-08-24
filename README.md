@@ -20,6 +20,7 @@ A pre-trained model weight `jp.npz` is included.
 
 ```python
 import snfa
+from snfa import Segment
 import librosa # or soundfile, torchaudio, scipy, etc.
 
 
@@ -32,19 +33,19 @@ transcript = "k o N n i ch i w a".lower().split(" ") # remember to lower it here
 # 2. normalized to [-1,1]
 # 3. sample rate matches model's `sr`
 x, sr = librosa.load("sample.wav", sr=aligner.sr)
-# trim the audio for better performance
+# trim the audio, this may improve alignment quality
 x, _ = librosa.effects.trim(x, top_db=20)
 # we also provide a utility function to trim
 # it's basically ripped off from librosa so you don't have to install it
 x, _ = snfa.trim_audio(x, top_db=20)
 
-segments = aligner(x, transcript)
+segments: list[Segment] = aligner(x, transcript)
 
-print(segment)
-# (phoneme label, start mili-sec, end mili-sec, score)
-# [('pau', 0, 908, 0.9583546351318474),
-#  ('k', 908, 928, 0.006900709283433312),
-#  ('o', 928, 1088, 0.795996002234283),
+print(segments)
+# (phoneme label, start mili-sec, end mili-sec)
+# [('pau', 0, 900),
+#  ('k', 900, 920),
+#  ('o', 920, 1080),
 # ...]
 
 # NOTE: The timestamps are in mili-sec, you can convert them to the indices on wavform by
