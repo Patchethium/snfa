@@ -1,366 +1,352 @@
 import argparse
 import csv
+import datetime
+import math
 import os
 from dataclasses import dataclass
-from typing import Iterable, Optional, Tuple
+from random import randint
+from typing import List
 
-import jpreprocess as jpp
 import lightning.pytorch as L
 import matplotlib.pyplot as plt
 import torch
-import torch.nn.functional as F
 import torchaudio as ta
-from lightning.pytorch import loggers
+from jpreprocess import jpreprocess
+from monotonic_align import maximum_path
 from omegaconf import OmegaConf
 from torch import Tensor, nn
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
-PHONE_SET = [
-    "a",
-    "b",
-    "by",
-    "ch",
-    "cl",
-    "d",
-    "dy",
-    "e",
-    "f",
-    "g",
-    "gy",
-    "h",
-    "hy",
-    "i",
-    "j",
-    "k",
-    "ky",
-    "m",
-    "my",
-    "n",
-    "ny",
-    "o",
-    "p",
-    "py",
-    "r",
-    "ry",
-    "s",
-    "sh",
-    "t",
-    "ts",
-    "ty",
-    "u",
-    "v",
-    "w",
-    "y",
-    "z",
-    "pau",
-]
-
-PHONE_SET = ["pad"] + PHONE_SET
+PAUSE_TOKEN = "_"
+CACHE_DIR = "./vendor"
 
 
+def ensure_dir(path: str):
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+
+# config
 @dataclass
 class Config:
-    dim: int
-
-    n_mels: int
+    lang: str
+    # data
+    dataset_path: str
+    phone_set: List[str]
     sr: int
+    n_mels: int
     n_fft: int
-    win_size: int
     hop_size: int
-    max_len: int
-    cache_dir: str
+    win_size: int
+    max_mel_len: int
+    max_text_len: int
 
-    max_epoch: int
+    # model
+    dim: int
+    dist_power: int
+    mel_enc_layers: int
+    text_enc_layers: int
+
+    # training
+    seed: int
     lr: float
-    decay: float
+    lr_decay: float
     batch_size: int
-    num_workers: int = 4
+    epochs: int
+    num_workers: int
+
+    # inference
+    pause_threshold: int
 
 
-class CVDataset(Dataset):
-    def __init__(self, root: str, split: str | Iterable[str], cfg: Config):
+def get_config(path: str) -> Config:
+    cfg_data = OmegaConf.load(path)
+    cfg = Config(**cfg_data)
+    assert PAUSE_TOKEN not in set(cfg.phone_set), (
+        f"Pause token {PAUSE_TOKEN} should not be present in phone set"
+    )
+    cfg.phone_set = cfg.phone_set + [PAUSE_TOKEN]  # add pause symbol
+    return cfg
+
+
+# dataset
+class CommonVoiceDataset(Dataset):
+    def __init__(self, cfg: Config, split: str):
+        # metadata is stored in a tsv file cfg.dataset_path/{split}.tsv
+        
         self.cfg = cfg
-        self.root = root
+        self.split = split
         self.data = []
-        if isinstance(split, str):
-            split = [split]
-        for s in split:
-            with open(os.path.join(root, s), "r") as f:
-                lines = f.readlines()
-            reader = csv.reader(lines, delimiter="\t")
-            _ = next(reader)  # skip header
-            for data in reader:
-                file, text, upvote, downvote = [data[i] for i in range(1, 5)]
-                if upvote < downvote:
+        self.phone_dict = {p: i for i, p in enumerate(cfg.phone_set)}
+        max_audio_len = cfg.max_mel_len * cfg.hop_size / cfg.sr * 1000  # in ms
+        tsv_path = os.path.join(cfg.dataset_path, f"{split}.tsv")
+        duration_tsv_path = os.path.join(cfg.dataset_path, "clip_durations.tsv")
+        durations = {}
+        with open(duration_tsv_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter="\t", quoting=csv.QUOTE_NONE)
+            for row in reader:
+                durations[row["clip"]] = int(row["duration[ms]"])
+        filtered = 0
+        filter_wavs = set(["common_voice_ja_39027804.mp3"]) # someone uploaded the whole chapter from `吾輩は猫である` as one clip
+        with open(tsv_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter="\t", quoting=csv.QUOTE_NONE)
+            for row in reader:
+                if row["up_votes"] < row["down_votes"] or row["path"] in filter_wavs:  # skip low quality data
                     continue
-                self.data.append((file, text))
-
-        self.mel = ta.transforms.MelSpectrogram(
+                if durations[row["path"]] > max_audio_len or len(row["sentence"].strip()) > cfg.max_text_len:  # skip long audio
+                    filtered += 1
+                    continue
+                self.data.append([row["sentence"].strip(), row["path"]])
+        print(f"Filtered {filtered} samples longer than {max_audio_len} ms or text length {cfg.max_text_len}.")
+        match cfg.lang:
+            case "ja":
+                self.jpp = jpreprocess()
+                self.g2p = self._g2p_jpp
+            case _:
+                raise ValueError(f"Unsupported language: {cfg.lang}")
+        self.mel_t = ta.transforms.MelSpectrogram(
             sample_rate=cfg.sr,
             n_fft=cfg.n_fft,
-            win_length=cfg.win_size,
             hop_length=cfg.hop_size,
             n_mels=cfg.n_mels,
-            f_min=0.0,
-            f_max=None,
-            power=2
+            power=1.0,
+            normalized=False,  # if True, the random gain would be meaningless
         )
-        self.jpp = jpp.jpreprocess()
-        self.phone_set = {phone: idx for idx, phone in enumerate(PHONE_SET)}
 
-        if not os.path.exists(cfg.cache_dir):
-            os.makedirs(cfg.cache_dir)
+    def insert_pause(self, phones: List[int]) -> List[int]:
+        res = [PAUSE_TOKEN]
+        for p in phones:
+            res.append(p)
+            res.append(PAUSE_TOKEN)
+        return res
+
+    def _add_noise(self, wav: Tensor) -> Tensor:
+        noise_rate = randint(0, 5) / 1000  # 0 to 0.5%
+        noise = torch.randn_like(wav) * noise_rate
+        return wav + noise
+
+    def _rand_gain(self, wav: Tensor) -> Tensor:
+        gain_db = randint(-3, 3)  # -3 to +3 dB
+        gain = 10 ** (gain_db / 20)
+        return wav * gain
+
+    def _g2p_jpp(self, text: str) -> List[int]:
+        phones = self.jpp.g2p(text).split()
+        phones = list(filter(lambda p: p in self.cfg.phone_set, phones))
+        phones = self.insert_pause(phones)
+        phone_indices = [self.phone_dict[p] for p in phones]
+        return torch.LongTensor(phone_indices)
+
+    def _mel_spec(self, wav_path: str) -> Tensor:
+        wav, sr = ta.load(wav_path)
+        if sr != self.cfg.sr:
+            wav = ta.functional.resample(wav, sr, self.cfg.sr)
+        wav = wav.mean(dim=0)  # convert to mono
+        # data augmentation
+        wav = self._add_noise(wav)
+        wav = self._rand_gain(wav)
+        mel_spec = self.mel_t.forward(wav).transpose(0, 1)  # (T, n_mels)
+        if mel_spec.shape[0] > self.cfg.max_mel_len:
+            mel_spec = mel_spec[: self.cfg.max_mel_len, :]
+        return mel_spec
 
     def __len__(self):
         return len(self.data)
 
-    def _g2p(self, text: str) -> Tensor:
-        ph = self.jpp.g2p(text).lower()
-        ph = ph.split()  # split by whitespace
-        ph = ["pau"] + ph + ["pau"]  # add start and end pause
-        ph_idx = [self.phone_set[p] for p in ph if p in self.phone_set]
-        return torch.tensor(ph_idx, dtype=torch.long)  # pad is given in PHONE_SET
-
-    def __getitem__(self, index):
-        file, text = self.data[index]
-        if os.path.exists(os.path.join(self.cfg.cache_dir, file + ".pt")):
-            mel, phoneme = torch.load(os.path.join(self.cfg.cache_dir, file + ".pt"))
-            return mel, phoneme
-        path = os.path.join(self.root, "clips", file)
-        wav, sr = ta.load(path)
-        if sr != 16000:
-            wav = ta.functional.resample(wav, sr, 16000)
-        if len(wav.shape) > 1:
-            wav = wav.mean(dim=0, keepdim=True)
-        wav = wav.squeeze(0)
-        mel = self.mel(wav)
-        mel = torch.log(mel + 1e-7).transpose(0, 1)  # (T, C)
-
-        phoneme = self._g2p(text)
-        if mel.shape[1] > self.cfg.max_len:
-            print(f"WARNING, {file} exceed max mel length")
-            mel = mel[:, : self.cfg.max_len]
-
-        torch.save((mel, phoneme), os.path.join(self.cfg.cache_dir, file + ".pt"))
-        return mel, phoneme
+    def __getitem__(self, idx):
+        text, wav_path = self.data[idx]
+        cache_path = os.path.join(
+            CACHE_DIR,
+            f"{self.split}_{idx}.pt",
+        )
+        if os.path.exists(cache_path):
+            return torch.load(cache_path)
+        phones = self.g2p(text)
+        wav_path = os.path.join(self.cfg.dataset_path, "clips", wav_path)
+        mel_spec = self._mel_spec(wav_path)
+        torch.save((phones, mel_spec), cache_path)
+        return phones, mel_spec
 
 
-def len2mask(lens: Tensor) -> Tensor:
-    """Create a mask tensor from lengths."""
-    max_len = int(lens.max().item())
-    batch_size = lens.shape[0]
-    mask = torch.arange(max_len, device=lens.device).expand(
-        batch_size, max_len
-    ) < lens.unsqueeze(1)
+def len2mask(lengths: list[int]) -> Tensor:
+    max_len = max(lengths)
+    bs = len(lengths)
+    mask = torch.zeros((bs, max_len), dtype=torch.bool)
+    for i, length in enumerate(lengths):
+        mask[i, :length] = 1
     return mask
 
 
-def collate_fn(batch: list[tuple[Tensor, Tensor, Tensor]]):
-    mel, phoneme = zip(*batch)
-    mel_lens = torch.LongTensor([m.shape[0] for m in mel])
-    phoneme_lens = torch.LongTensor([p.shape[0] for p in phoneme])
+def collate_fn(batch):
+    # returns padded phones&mels and mask for phones&mels
+    phones, mels = zip(*batch)  # noqa: B905
+    phone_lens = [p.shape[0] for p in phones]
+    mel_lens = [m.shape[0] for m in mels]
+    phones = pad_sequence(phones, batch_first=True, padding_value=0)
+    mels = pad_sequence(mels, batch_first=True, padding_value=0.0)
+    phone_mask = len2mask(phone_lens)
     mel_mask = len2mask(mel_lens)
-    mel = nn.utils.rnn.pad_sequence(mel, batch_first=True, padding_value=0.0) # type: ignore
-    phoneme = nn.utils.rnn.pad_sequence(phoneme, batch_first=True, padding_value=0) # type: ignore
-    return mel, phoneme, mel_lens, phoneme_lens, mel_mask
+    return phones, phone_mask, mels, mel_mask
 
 
-def get_dataloaders(root: str, cfg: Config) -> Tuple[DataLoader, DataLoader]:
-    train_dataset = CVDataset(root, "filtered_validated.tsv", cfg)
-    val_dataset = CVDataset(root, "dev.tsv", cfg)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=cfg.batch_size,
-        shuffle=True,
-        num_workers=cfg.num_workers,
-        collate_fn=collate_fn,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=cfg.batch_size,
-        shuffle=False,
-        num_workers=cfg.num_workers,
-        collate_fn=collate_fn,
-    )
-    return train_loader, val_loader
-
-
+# model
 class Aligner(nn.Module):
-    class Encoder(nn.Module):
-        def __init__(self, input_dim, hidden_dim, output_dim):
-            super().__init__()
-            self.pre = nn.Linear(input_dim, hidden_dim)
-            self.bi_rnn = nn.GRU(
-                hidden_dim,
-                hidden_dim // 2,
-                num_layers=2,
-                bidirectional=True,
-                batch_first=True,
-            )
-            self.fc = nn.Linear(hidden_dim, output_dim)
-
-        def forward(self, x, mask: Optional[Tensor] = None):
-            x = self.pre(x)
-            if mask is not None:
-                x = x * mask.unsqueeze(-1)
-            r = x
-            x, _ = self.bi_rnn(x)
-            x = x + r
-            logits = self.fc(x)
-            # logits = torch.log_softmax(logits, dim=-1)  # (batch, time, output_dim)
-            return logits
-
-    class Decoder(nn.Module):
-        """
-        3-layer MLP with lrelu activation
-        """
-
-        def __init__(self, input_dim, hidden_dim, output_dim):
-            super().__init__()
-            self.net = nn.Sequential(
-                nn.Linear(input_dim, hidden_dim),
-                nn.LeakyReLU(),
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.LeakyReLU(),
-                nn.Linear(hidden_dim, output_dim),
-            )
-
-        def forward(self, x):
-            x = x[:, :, 1:]  # remove blank token
-            # softmax
-            x = torch.softmax(x, dim=-1)
-            return self.net(x)
-
-    def __init__(self, input_dim=80, hidden_dim=256, output_dim=None):
-        super().__init__()
-        if output_dim is None:
-            output_dim = len(PHONE_SET)
-        self.n_mels = input_dim
-        self.encoder = self.Encoder(input_dim, hidden_dim, output_dim)
-        self.decoder = self.Decoder(output_dim - 1, hidden_dim, input_dim)
-
-    def _forward(self, x, mask: Optional[Tensor]):  # x: (batch, time, mel)
-        logits = self.encoder(x, mask)  # (batch, time, output_dim)
-        recon = self.decoder(logits)  # (batch, time, mel)
-        return logits, recon
-
-    def forward(
-        self,
-        mel: Tensor,
-        phoneme: Tensor,
-        mel_lens: Tensor,
-        phoneme_lens: Tensor,
-        mel_mask: Tensor,
-    ):
-        logits, recon = self._forward(mel, mel_mask)
-        logits = torch.log_softmax(logits, dim=-1)  # (batch, time, output_dim)
-        ctc_loss = F.ctc_loss(
-            logits.transpose(0, 1),  # (time, batch, output_dim)
-            phoneme,
-            mel_lens,
-            phoneme_lens,
-            blank=0,
-            reduction="mean",
-            zero_infinity=True,
-        )
-        recon_loss = (
-            torch.abs((recon - mel) * mel_mask.unsqueeze(-1)).sum()
-            / mel_mask.sum()
-            / self.n_mels
-        )
-        return ctc_loss, recon_loss
-
-    def infer(self, mel: Tensor, mel_mask: Optional[Tensor] = None):
-        return self._forward(mel, mel_mask)
-
-
-class Trainer(L.LightningModule):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
-        self.model = Aligner(cfg.n_mels, cfg.dim, len(PHONE_SET))
+        self.text_emb = nn.Embedding(len(cfg.phone_set), cfg.dim)
+        self.text_enc = nn.ModuleList(
+            [
+                nn.GRU(cfg.dim, cfg.dim // 2, batch_first=True, bidirectional=True)
+                for _ in range(cfg.text_enc_layers)
+            ]
+        )
+        for layer in self.text_enc:
+            layer.flatten_parameters()
+        self.mel_head = nn.Linear(cfg.dim, cfg.n_mels)
 
-    def forward(self, mel):
-        return self.model.infer(mel)
+    def forward(
+        self,
+        text: torch.LongTensor,
+        text_mask: torch.BoolTensor,
+        mel: torch.FloatTensor,
+        mel_mask: torch.BoolTensor,
+    ) -> tuple[torch.FloatTensor, torch.FloatTensor]:
+        x = self.text_emb(text)  # (B, T_t, dim)
+        for layer in self.text_enc:
+            r = x
+            x, _ = layer(x)
+            x = x + r  # residual
+        x = self.mel_head.forward(x)  # (B, T_t, n_mels)
+        attn_mask = text_mask.unsqueeze(-1) & mel_mask.unsqueeze(1)  # (B, T_t, T_m)
+        with torch.no_grad():
+            const = -0.5 * math.log(2 * math.pi) * self.cfg.n_mels  # scalar
+            factor = -0.5 * torch.ones(
+                x.shape, dtype=x.dtype, device=x.device
+            )  # [B, T_t, n_mels]
+            y_square = torch.matmul(factor, mel.transpose(1, 2) ** 2)  # (B, T_t, T_m)
+            y_mu_double = torch.matmul(
+                2.0 * (factor * x), mel.transpose(1, 2)
+            )  # (B, T_t, T_m)
+            mu_square = torch.sum(factor * (x**2), dim=-1).unsqueeze(-1)  # (B, T_t, 1)
+            log_prior = y_square - y_mu_double + mu_square + const
+            path = maximum_path(log_prior, attn_mask)
+            path = path.detach()
+        mel_ = path.transpose(1, 2) @ x  # (B, T_t, n_mels)
+        del path
+        return mel_
+
+
+# Lightning module
+class SNFA(L.LightningModule):
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self.cfg = cfg
+        self.model = Aligner(cfg)
+
+    def _forward(self, batch, prefix: str = "train"):
+        phones, phone_mask, mels, mel_mask = batch
+        recon_mel = self.model(phones, phone_mask, mels, mel_mask)
+        loss = (
+            torch.sum(
+                0.5
+                * ((mels - recon_mel) ** 2 + math.log(2 * math.pi))
+                * mel_mask.unsqueeze(-1)
+            )
+            / mel_mask.sum()
+            / self.cfg.n_mels
+        )
+        return loss
+
+    def on_validation_epoch_start(self):
+        self.sample_batch_idx = randint(0, self.val_len // self.cfg.batch_size - 1)
+
+    def _plot_alignment(self, path: Tensor, prefix: str):
+        plt.imshow(path[0].detach().cpu().numpy(), aspect="auto", origin="lower")
+        self.logger.experiment.add_figure(
+            f"{prefix}/alignment", plt.gcf(), global_step=self.global_step
+        )
+        plt.clf()
+        plt.close()
 
     def training_step(self, batch, batch_idx):
-        mel, phoneme, mel_lens, phoneme_lens, mel_mask = batch
-        ctc_loss, recon_loss = self.model(
-            mel, phoneme, mel_lens, phoneme_lens, mel_mask
-        )
-        loss = ctc_loss + recon_loss
-        losses = {
-            "loss": loss,
-            "ctc_loss": ctc_loss,
-            "recon_loss": recon_loss,
-        }
-        self.log_dict({"train/" + k: v for k, v in losses.items()})
-        return losses
-
-    def plot_inference(self, mel: Tensor, logits: Tensor, recon: Tensor):
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15))
-        ax1.imshow(mel[0].detach().cpu().numpy().T, aspect="auto")
-        ax2.imshow(logits[0].detach().cpu().numpy().T, aspect="auto")
-        ax3.imshow(recon[0].detach().cpu().numpy().T, aspect="auto")
-        tensorboard = self.logger.experiment  # type: ignore
-        tensorboard.add_figure("inference", fig, self.current_epoch)
-        plt.close(fig)
+        loss = self._forward(batch, "train")
+        self.log("train/loss", loss.item())
+        return loss
 
     def validation_step(self, batch, batch_idx):
-        if batch_idx == 0:
-            # plot the inference result
-            mel, phoneme, mel_lens, phoneme_lens, mel_mask = batch
-            logits, recon = self.model.infer(mel, mel_mask)
-            self.plot_inference(mel, logits, recon)
-        losses = self.training_step(batch, batch_idx)
-        self.log_dict({"val/" + k: v for k, v in losses.items()})
-        return losses
+        with torch.no_grad():
+            loss = self._forward(batch, "val")
+            self.log("val/loss", loss.item())
+            return loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.cfg.lr)
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=1, gamma=self.cfg.decay
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer, gamma=self.cfg.lr_decay
         )
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        return [optimizer], [scheduler]
+
+    def train_dataloader(self):
+        train_dataset = CommonVoiceDataset(self.cfg, split="train")
+        self.train_len = len(train_dataset)
+        return DataLoader(
+            train_dataset,
+            batch_size=self.cfg.batch_size,
+            shuffle=True,
+            num_workers=self.cfg.num_workers,
+            collate_fn=collate_fn,
+            drop_last=True,
+        )
+
+    def val_dataloader(self):
+        val_dataset = CommonVoiceDataset(self.cfg, split="dev")
+        self.val_len = len(val_dataset)
+        return DataLoader(
+            val_dataset,
+            batch_size=self.cfg.batch_size,
+            shuffle=False,
+            num_workers=self.cfg.num_workers,
+            collate_fn=collate_fn,
+            drop_last=False,
+        )
 
 
-def main():
-    L.seed_everything(3407)
-    parser = argparse.ArgumentParser(description="Train the SNFA model")
+# main
+def main(cfg_path: str):
+    ensure_dir(CACHE_DIR)
+    cfg = get_config(cfg_path)
+    model = SNFA(cfg)
+    L.seed_everything(cfg.seed)
+    date = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    trainer = L.Trainer(
+        log_every_n_steps=20,
+        max_epochs=cfg.epochs,
+        accelerator="auto",
+        devices="auto",
+        logger=L.loggers.TensorBoardLogger("logs/"),
+        callbacks=[
+            L.callbacks.ModelCheckpoint(
+                monitor="val/loss",
+                filename=date + "-{epoch:02d}-{val/loss:.4f}",
+                save_top_k=3,
+                mode="min",
+            ),
+            L.callbacks.LearningRateMonitor(logging_interval="step"),
+        ],
+    )
+    trainer.fit(model)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         "-c",
         "--config",
         type=str,
-        required=False,
-        default="config.yaml",
-        help="Path to the configuration file",
+        default="config/ja.yaml",
+        help="Path to config file",
     )
-    parser.add_argument(
-        "-d",
-        "--data_dir",
-        type=str,
-        required=True,
-        default="data",
-        help="Path to the dataset directory",
-    )
-    parser.add_argument("--ckpt", type=str, default=None, help="Path to checkpoint to resume")
     args = parser.parse_args()
-    cfg = OmegaConf.load(args.config)
-    cfg = Config(**cfg)  # type: ignore
-    if args.ckpt is not None:
-        model = Trainer.load_from_checkpoint(args.ckpt, cfg=cfg)
-    else:
-        model = Trainer(cfg)
-    train, val = get_dataloaders(args.data_dir, cfg)
-    logger = loggers.TensorBoardLogger("logs")
-    trainer = L.Trainer(
-        max_epochs=cfg.max_epoch,
-        accelerator="auto",
-        log_every_n_steps=20,
-        logger=logger,
-    )
-    trainer.fit(model, train_dataloaders=train, val_dataloaders=val)
-
-
-if __name__ == "__main__":
-    main()
+    main(args.config)

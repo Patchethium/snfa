@@ -1,0 +1,63 @@
+phone_set: [
+    "a",
+    "b",
+    "by",
+    "ch",
+    "cl",
+    "d",
+    "dy",
+    "e",
+    "f",
+    "g",
+    "gy",
+    "h",
+    "hy",
+    "i",
+    "j",
+    "k",
+    "ky",
+    "m",
+    "my",
+    "n",
+    "ny",
+    "o",
+    "p",
+    "py",
+    "r",
+    "ry",
+    "s",
+    "sh",
+    "t",
+    "ts",
+    "ty",
+    "u",
+    "v",
+    "w",
+    "y",
+    "z",
+  ]
+
+lang: "ja"
+
+dataset_path: "path/to/your/dataset"
+sr: 16000
+n_mels: 80
+n_fft: 1024
+hop_size: 160 # 10ms
+win_size: 400
+max_mel_len: 1024 # ~20s
+max_text_len: 100
+
+dim: 256
+dist_power: 2
+mel_enc_layers: 2
+text_enc_layers: 2
+
+seed: 3407
+lr: 1e-4
+lr_decay: 0.999
+batch_size: 16
+epochs: 10
+num_workers: 4
+
+pause_threshold: 2 # in frames/20ms

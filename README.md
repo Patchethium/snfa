@@ -6,7 +6,8 @@
 - Numpy as the only dependency
 - MFA comparable alignment quality
 
-**Note**: You still need `PyTorch` and some other libs if you want to do training.
+> [!Note]
+> You still need `PyTorch` and some other libs if you want to do training.
 
 ## Inference
 
@@ -16,7 +17,7 @@ pip install snfa
 
 A pre-trained model weight `jp.npz` is included.
 
-`jp.npz` is a weight file trained on Japanese Common Voice Corpus 14.0, 6/28/2023. The model weight is released into `Public Domain`.
+`jp.npz` is a weight file trained on Japanese Common Voice Corpus 22.0, 2025-06-20. The model weight is released into `Public Domain`.
 
 ```python
 import snfa
@@ -115,7 +116,7 @@ To bundle the model weights properly. I'd appreciate it if you offer a better wa
 ## Todos
 
 - Rust crate
-- multi-language
+- multi-language support
 
 ## Licence
 
@@ -123,10 +124,50 @@ To bundle the model weights properly. I'd appreciate it if you offer a better wa
 
 The file `snfa/stft.py` and `snfa/util.py` contains code adapted from `librosa` which obeys `ISC Licence` with different copyright claim. A copy of `librosa`'s licence can be found in [librosa's repo](https://github.com/librosa/librosa/blob/main/LICENSE.md).
 
-The file `snfa/viterbi.py` contains code adapted from `torchaudio` which obeys `BSD 2-Clause "Simplified" License`. A copy of `torchaudio`'s licence can be found in [torchaudio's repo](https://github.com/pytorch/audio/blob/main/LICENSE).
-
 The testing audio file is ripped from Japanese Common Voice Corpus 14.0, 6/28/2023, Public Domain.
 
-## Credit
+## How it works
 
-The neural network used in `snfa` is basically a PyTorch implementation of `CTC*` structure described in [_Evaluating Speech—Phoneme Alignment and Its Impact on Neural Text-To-Speech Synthesis_](https://www.audiolabs-erlangen.de/resources/NLUI/2023-ICASSP-eval-alignment-tts).
+The model consists of a text encoder and a mel encoder. It uses Monotonic Alignment Search (MAS) for alignment, and Straight-Through Estimator to optimize both encoders. The pseudo code is as follows:
+
+```python
+z_t = text_encoder(phoneme)
+z_m = mel_encoder(mel)
+dist = -dist(z_t, z_m) # [T_m, T_t], negative pairwise distance matrix
+alignment = MAS(dist)
+z_m_ = matmul(alignment, z_m)
+z_t_ = matmul(alignment^T, z_t)
+
+logits_t = proj_t(z_m_)
+z_t_ = proj_m(z_t_)
+
+# optional, doesn't make much difference
+# z_m_ = z_m + sg(z_m_ - z_m)
+# z_t_ = z_t + sg(z_t_ - z_t)
+
+L = (z_t_ - sg(z_m))**2 + cross_entropy(logits_t, phoneme)
+```
+
+Where `sg` is the stop-gradient operator.
+
+> [!Note]
+> As far as I know, this idea (using Straight-Through Estimator for Forced Alignment) is yet to be published before, but as trivial as it is, perhaps it's not a big thing after all.
+
+### Silence Handling
+
+We use g2p model to convert text to phoneme sequence, which doesn't include precise silences. To tackle this, we add a `_` placeholder to every inter-phoneme gap. Given a threshold, we consider any `_` longer than the threshold as silence, else it's appended to the previous phoneme. The threshold is set to 3 frames (30ms) by default.
+
+## Cite
+
+If you find `snfa` useful, it'd be a great pleasure if you cite it as follows:
+
+```bibtex
+@misc{snfa2023,
+    author = {Patchethium},
+    title = {snfa: Simple Neural Forced Aligner},
+    year = {2023},
+    publisher = {GitHub},
+    journal = {GitHub repository},
+    howpublished = {\url{https://github.com/patchethium/snfa}}
+}
+```
