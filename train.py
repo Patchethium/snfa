@@ -67,7 +67,8 @@ class Config:
     n_fft: int
     win_size: int
     hop_size: int
-    max_len: int
+    max_mel_len: int
+    max_text_len: int
     cache_dir: str
 
     max_epoch: int
@@ -84,16 +85,30 @@ class CVDataset(Dataset):
         self.data = []
         if isinstance(split, str):
             split = [split]
+        with open(os.path.join(root, "clip_durations.tsv"), "r") as f:
+            lines = f.readlines()
+        reader = csv.DictReader(lines, delimiter="\t")
+        _ = next(reader)  # skip header
+        audio_duration = {
+            row["clip"]: int(row["duration[ms]"]) for row in reader
+        }  # duration is in miliseconds
         for s in split:
             with open(os.path.join(root, s), "r") as f:
                 lines = f.readlines()
-            reader = csv.reader(lines, delimiter="\t")
+            reader = csv.DictReader(lines, delimiter="\t")
             _ = next(reader)  # skip header
+            filtered = 0
             for data in reader:
-                file, text, upvote, downvote = [data[i] for i in range(1, 5)]
-                if upvote < downvote:
+                if (
+                    int(data["up_votes"]) < int(data["down_votes"])
+                    or len(data["sentence"].strip()) > cfg.max_text_len
+                    or audio_duration[data["path"]]
+                    > cfg.max_mel_len * cfg.hop_size / cfg.sr * 1000
+                ):
+                    filtered += 1
                     continue
-                self.data.append((file, text))
+                self.data.append((data["path"], data["sentence"].strip()))
+            print(f"Filtered {filtered} samples in {s} set")
 
         self.mel = ta.transforms.MelSpectrogram(
             sample_rate=cfg.sr,
@@ -103,7 +118,7 @@ class CVDataset(Dataset):
             n_mels=cfg.n_mels,
             f_min=0.0,
             f_max=None,
-            power=2
+            power=2,
         )
         self.jpp = jpp.jpreprocess()
         self.phone_set = {phone: idx for idx, phone in enumerate(PHONE_SET)}
@@ -137,9 +152,9 @@ class CVDataset(Dataset):
         mel = torch.log(mel + 1e-7).transpose(0, 1)  # (T, C)
 
         phoneme = self._g2p(text)
-        if mel.shape[1] > self.cfg.max_len:
+        if mel.shape[1] > self.cfg.max_mel_len:
             print(f"WARNING, {file} exceed max mel length")
-            mel = mel[:, : self.cfg.max_len]
+            mel = mel[:, : self.cfg.max_mel_len]
 
         torch.save((mel, phoneme), os.path.join(self.cfg.cache_dir, file + ".pt"))
         return mel, phoneme
@@ -156,17 +171,17 @@ def len2mask(lens: Tensor) -> Tensor:
 
 
 def collate_fn(batch: list[tuple[Tensor, Tensor, Tensor]]):
-    mel, phoneme = zip(*batch)
+    mel, phoneme = zip(*batch, strict=True)
     mel_lens = torch.LongTensor([m.shape[0] for m in mel])
     phoneme_lens = torch.LongTensor([p.shape[0] for p in phoneme])
     mel_mask = len2mask(mel_lens)
-    mel = nn.utils.rnn.pad_sequence(mel, batch_first=True, padding_value=0.0) # type: ignore
-    phoneme = nn.utils.rnn.pad_sequence(phoneme, batch_first=True, padding_value=0) # type: ignore
+    mel = nn.utils.rnn.pad_sequence(mel, batch_first=True, padding_value=0.0)  # type: ignore
+    phoneme = nn.utils.rnn.pad_sequence(phoneme, batch_first=True, padding_value=0)  # type: ignore
     return mel, phoneme, mel_lens, phoneme_lens, mel_mask
 
 
 def get_dataloaders(root: str, cfg: Config) -> Tuple[DataLoader, DataLoader]:
-    train_dataset = CVDataset(root, "filtered_validated.tsv", cfg)
+    train_dataset = CVDataset(root, "train.tsv", cfg)
     val_dataset = CVDataset(root, "dev.tsv", cfg)
     train_loader = DataLoader(
         train_dataset,
@@ -228,7 +243,7 @@ class Aligner(nn.Module):
         def forward(self, x):
             x = x[:, :, 1:]  # remove blank token
             # softmax
-            x = torch.softmax(x, dim=-1)
+            # x = torch.softmax(x, dim=-1)
             return self.net(x)
 
     def __init__(self, input_dim=80, hidden_dim=256, output_dim=None):
@@ -343,7 +358,9 @@ def main():
         default="data",
         help="Path to the dataset directory",
     )
-    parser.add_argument("--ckpt", type=str, default=None, help="Path to checkpoint to resume")
+    parser.add_argument(
+        "--ckpt", type=str, default=None, help="Path to checkpoint to resume"
+    )
     args = parser.parse_args()
     cfg = OmegaConf.load(args.config)
     cfg = Config(**cfg)  # type: ignore

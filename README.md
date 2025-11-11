@@ -16,7 +16,7 @@ pip install snfa
 
 A pre-trained model weight `jp.npz` is included.
 
-`jp.npz` is a weight file trained on Japanese Common Voice Corpus 14.0, 6/28/2023. The model weight is released into `Public Domain`.
+`jp.npz` is a weight file trained on Japanese Common Voice Corpus 20.0, 06/12/2024. The model weight is released into `Public Domain`.
 
 ```python
 import snfa
