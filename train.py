@@ -116,8 +116,8 @@ class CVDataset(Dataset):
             win_length=cfg.win_size,
             hop_length=cfg.hop_size,
             n_mels=cfg.n_mels,
-            f_min=0.0,
-            f_max=None,
+            f_min=0,
+            f_max=cfg.sr // 2,
             power=2,
         )
         self.jpp = jpp.jpreprocess()
