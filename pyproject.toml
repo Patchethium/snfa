@@ -43,6 +43,7 @@ dev = [
     "black>=25.1.0",
     "pytest>=8.4.1",
     "ruff>=0.12.4",
+    "safetensors>=0.4.0",
 ]
 
 [tool.setuptools.packages.find]

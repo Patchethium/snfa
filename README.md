@@ -90,6 +90,14 @@ To use the model in `numpy`, export the checkpoint with
 uv run export.py -c config.yaml --ckpt /path/to/checkpoint -o output.npz
 ```
 
+For the Rust crate, export `.safetensors` instead, from the checkpoint or from
+an exported `.npz`:
+
+```bash
+uv run export.py -c config.yaml --ckpt /path/to/checkpoint -f safetensors -o output
+uv run export.py --npz output.npz -f safetensors -o output
+```
+
 ### Publishing
 
 Usually I am responsible for publishing the package to PyPI, this section serves as a reminder for myself.
@@ -112,9 +120,14 @@ data = collect_data_files('snfa')
 
 To bundle the model weights properly. I'd appreciate it if you offer a better way.
 
+## Rust
+
+A Rust port of the inference lives in [`rust/`](/rust/README.md). It reads
+`.safetensors` models, which `export.py` writes with `-f safetensors`, either
+from a checkpoint or by converting an exported `.npz` with `--npz`.
+
 ## Todos
 
-- Rust crate
 - multi-language
 
 ## Licence

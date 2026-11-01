@@ -1,0 +1,19 @@
+[package]
+name = "snfa"
+version = "0.1.0"
+edition = "2024"
+description = "A simple neural forced aligner for phoneme to audio alignment"
+authors = ["Patchethium"]
+license = "ISC"
+repository = "https://github.com/Patchethium/snfa"
+readme = "README.md"
+exclude = ["tests/make_fixtures.py"]
+
+[dependencies]
+half = "2.7.1"
+rustfft = "6.4.1"
+safetensors = "0.8.0"
+
+[dev-dependencies]
+hound = "3.5.1"
+serde_json = "1.0.154"

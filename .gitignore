@@ -17,3 +17,5 @@ vendor/
 *.npz
 !/demo.ipynb
 !/tests/*.wav
+/rust/target/
+*.safetensors
